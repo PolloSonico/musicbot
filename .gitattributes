@@ -1,0 +1,3 @@
+# Scripts de Windows guardados con CRLF tal cual (cmd.exe falla con saltos LF)
+*.bat -text
+*.ps1 -text
