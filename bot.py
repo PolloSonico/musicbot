@@ -1,8 +1,10 @@
 import asyncio
+import base64
 import logging
 import logging.handlers
 import os
 import socket
+import subprocess
 from pathlib import Path
 
 import discord
@@ -63,24 +65,53 @@ class MusicBot(commands.Bot):
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
         if isinstance(error, commands.CommandNotFound):
             return
-        if isinstance(error, commands.MissingRequiredArgument):
-            await ctx.send(f"Falta un argumento: `{error.param.name}`. Usa `{PREFIX}help {ctx.command}`.")
-            return
-        if isinstance(error, commands.BadArgument):
-            await ctx.send(f"Argumento inválido. Usa `{PREFIX}help {ctx.command}`.")
-            return
-        if isinstance(error, commands.CheckFailure):
-            from persona import say
+        from persona import say  # los avisos de error también los dice el personaje
 
-            await say(
-                self,
-                ctx.channel,
-                f"{ctx.author.display_name} intentó usar el comando '{ctx.invoked_with}' pero no se pudo: {error}",
-                str(error),
-            )
-            return
-        logging.exception("Error en el comando %s", ctx.command, exc_info=error)
-        await ctx.send("Ocurrió un error inesperado. Revisa `logs/bot.log`.")
+        who = ctx.author.display_name
+        if isinstance(error, commands.MissingRequiredArgument):
+            situation = f"{who} usó el comando '{ctx.invoked_with}' pero le faltó escribir {error.param.name}."
+            info = f"Falta un argumento: `{error.param.name}`. Usa `{PREFIX}help {ctx.command}`."
+        elif isinstance(error, commands.BadArgument):
+            situation = f"{who} usó el comando '{ctx.invoked_with}' con un dato que no entiendes."
+            info = f"Argumento inválido. Usa `{PREFIX}help {ctx.command}`."
+        elif isinstance(error, commands.CheckFailure):
+            situation = f"{who} intentó usar el comando '{ctx.invoked_with}' pero no se pudo: {error}"
+            info = str(error)
+        else:
+            logging.exception("Error en el comando %s", ctx.command, exc_info=error)
+            situation = f"{who} usó el comando '{ctx.invoked_with}' y algo salió mal por dentro (un error del bot)."
+            info = "Ocurrió un error inesperado. Revisa `logs/bot.log`."
+        await say(self, ctx.channel, situation, info)
+
+
+ALREADY_RUNNING = (
+    "Ya hay otra copia del bot funcionando (probablemente la tarea automática){extra}.\n"
+    "Dos copias a la vez se pelean por el canal de voz: la música se corta y los mensajes salen repetidos.\n"
+    "Ejecuta windows\\detener_bot.bat y vuelve a intentarlo."
+)
+
+
+def other_bot_processes() -> list[int]:
+    """Otras copias de bot.py en Windows (también las versiones viejas, que no usan el candado)."""
+    if os.name != "nt":
+        return []
+    script = (
+        "Get-CimInstance Win32_Process | Where-Object { "
+        "$_.Name -like 'python*' -and $_.CommandLine -match '(^|[ \\\\])bot\\.py' "
+        "} | ForEach-Object { $_.ProcessId }"
+    )
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode()  # evita problemas con las comillas
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-EncodedCommand", encoded],
+            capture_output=True, text=True, timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception as exc:
+        logging.warning("No se pudo comprobar si hay otras copias del bot: %s", exc)
+        return []
+    mine = {os.getpid(), os.getppid()}  # el lanzador del .venv es nuestro proceso padre
+    return [int(pid) for pid in result.stdout.split() if pid.isdigit() and int(pid) not in mine]
 
 
 def acquire_single_instance() -> socket.socket:
@@ -88,10 +119,10 @@ def acquire_single_instance() -> socket.socket:
     try:
         lock.bind(("127.0.0.1", INSTANCE_PORT))
     except OSError:
-        raise SystemExit(
-            "Ya hay otra copia del bot funcionando (probablemente la tarea automática).\n"
-            "Si quieres probarlo a mano, primero ejecuta windows\\detener_bot.bat"
-        )
+        raise SystemExit(ALREADY_RUNNING.format(extra=""))
+    others = other_bot_processes()
+    if others:
+        raise SystemExit(ALREADY_RUNNING.format(extra=f" (procesos {', '.join(map(str, others))})"))
     return lock
 
 

@@ -120,7 +120,9 @@ class CharacterAIBackend:
                 self._broken = True
                 raise RuntimeError(describe_error(exc)) from exc
 
-    async def ask(self, key: str, text: str, context: str = "", wait: bool = True) -> Optional[str]:
+    async def ask(
+        self, key: str, text: str, context: str = "", wait: bool = True, fast: bool = False
+    ) -> Optional[str]:
         if not wait and self._lock.locked():
             return None
         async with self._lock:

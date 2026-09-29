@@ -29,6 +29,8 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 HISTORY_FILE = DATA_DIR / "historial.json"
 STATE_FILE = DATA_DIR / "gemini_estado.json"
 MAX_TURNS = 40  # mensajes que recuerda por canal
+MODEL_TIMEOUT = 20  # segundos máximos por modelo en una charla
+FAST_MODEL_TIMEOUT = 6  # segundos máximos por modelo en un comentario de la música
 FALLBACK_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"]
 # El cupo diario gratis de Gemini se renueva a medianoche, hora del Pacífico.
 QUOTA_TZ = ZoneInfo("America/Los_Angeles")
@@ -159,7 +161,14 @@ class GeminiBackend:
         self.cooldowns = {m: t for m, t in self.cooldowns.items() if t > now}
         _save(STATE_FILE, {"cooldowns": self.cooldowns, "thinking": self.thinking})
 
-    async def ask(self, key: str, text: str, context: str = "", wait: bool = True) -> Optional[str]:
+    async def ask(
+        self, key: str, text: str, context: str = "", wait: bool = True, fast: bool = False
+    ) -> Optional[str]:
+        """fast=True (comentarios de la música): primero los modelos Lite, que responden antes,
+        y menos tiempo por modelo; así un modelo lento o saturado no retrasa los avisos."""
+        models = [m for m in self.models if "lite" in m] + [m for m in self.models if "lite" not in m] \
+            if fast else self.models
+        per_model = FAST_MODEL_TIMEOUT if fast else MODEL_TIMEOUT
         lock = self._locks.setdefault(key, asyncio.Lock())
         if not wait and lock.locked():
             return None  # el canal está ocupado con otra respuesta: no hacemos esperar a la música
@@ -169,15 +178,20 @@ class GeminiBackend:
             system = self.system_prompt
             if context:
                 system += f"\n\n## Lo que está pasando ahora (información real)\n{context}"
-            for model in self.models:
+            for model in models:
                 if self.cooldowns.get(model, 0) > time.time():
                     continue
-                reply = await self._generate(model, contents, system)
+                try:
+                    reply = await asyncio.wait_for(self._generate(model, contents, system), per_model)
+                except asyncio.TimeoutError:
+                    self.cooldowns[model] = time.time() + 60
+                    log.warning("Gemini: %s tardó más de %ss, se prueba otro modelo", model, per_model)
+                    continue
                 if reply is None:
                     continue
                 history = contents + [{"role": "model", "parts": [{"text": reply}]}]
                 self.history[key] = history[-MAX_TURNS:]
-                _save(HISTORY_FILE, self.history)
+                await asyncio.to_thread(_save, HISTORY_FILE, dict(self.history))
                 return reply
             return None
 
