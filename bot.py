@@ -43,9 +43,11 @@ class MusicBot(commands.Bot):
             intents=intents,
             help_command=commands.DefaultHelpCommand(no_category="Otros"),
             case_insensitive=True,
+            allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, replied_user=False),
         )
 
     async def setup_hook(self) -> None:
+        await self.load_extension("persona")
         await self.load_extension("music")
 
     async def on_ready(self) -> None:
@@ -64,7 +66,14 @@ class MusicBot(commands.Bot):
             await ctx.send(f"Argumento inválido. Usa `{PREFIX}help {ctx.command}`.")
             return
         if isinstance(error, commands.CheckFailure):
-            await ctx.send(str(error))
+            from persona import say
+
+            await say(
+                self,
+                ctx.channel,
+                f"{ctx.author.display_name} intentó usar el comando '{ctx.invoked_with}' pero no se pudo: {error}",
+                str(error),
+            )
             return
         logging.exception("Error en el comando %s", ctx.command, exc_info=error)
         await ctx.send("Ocurrió un error inesperado. Revisa `logs/bot.log`.")

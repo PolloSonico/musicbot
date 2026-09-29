@@ -12,6 +12,8 @@ import discord
 import yt_dlp
 from discord.ext import commands
 
+from persona import comment_later, say
+
 log = logging.getLogger("music")
 
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg").strip() or "ffmpeg"
@@ -168,7 +170,10 @@ class GuildPlayer:
                         try:
                             await asyncio.wait_for(self._wake.wait(), IDLE_SECONDS)
                         except asyncio.TimeoutError:
-                            await self._say("No hay nada en la cola, me desconecto 👋")
+                            await self._say(
+                                "Terminó la música, la cola quedó vacía y te vas del canal de voz.",
+                                "No hay nada en la cola, me desconecto 👋",
+                            )
                             break
                         continue
                     self.current = self.queue.popleft()
@@ -182,7 +187,10 @@ class GuildPlayer:
                     info = await resolve_stream(track)
                 except Exception as exc:
                     log.warning("No se pudo obtener %s: %s", track.url, exc)
-                    await self._say(f"⚠️ No pude reproducir **{track.title}**, la salto.")
+                    await self._say(
+                        f"No pudiste reproducir la canción '{track.title}' (falló YouTube) y la saltas.",
+                        f"⚠️ No pude reproducir **{track.title}**, la salto.",
+                    )
                     self.current = None
                     continue
 
@@ -210,11 +218,8 @@ class GuildPlayer:
             log.exception("El reproductor de %s falló", self.guild.name)
         await self.cog.cleanup(self.guild)
 
-    async def _say(self, text: str) -> None:
-        try:
-            await self.channel.send(text)
-        except discord.HTTPException:
-            pass
+    async def _say(self, situation: str, info: str, **kwargs) -> None:
+        await say(self.bot, self.channel, situation, info, **kwargs)
 
     async def _announce(self, track: Track, info: dict) -> None:
         embed = discord.Embed(
@@ -228,10 +233,11 @@ class GuildPlayer:
             embed.add_field(name="Canal", value=info["uploader"])
         if info.get("thumbnail"):
             embed.set_thumbnail(url=info["thumbnail"])
-        try:
-            await self.channel.send(embed=embed)
-        except discord.HTTPException:
-            pass
+        await self._say(
+            f"Empieza a sonar '{track.title}', que pidió {track.requester}. Preséntala.",
+            "",
+            embed=embed,
+        )
 
 
 class Music(commands.Cog, name="Música"):
@@ -304,29 +310,46 @@ class Music(commands.Cog, name="Música"):
                 log.warning("Búsqueda fallida '%s': %s", busqueda, exc)
                 tracks = []
         if not tracks:
-            await ctx.send("No encontré nada con eso 😕")
+            await say(
+                self.bot, ctx.channel,
+                f"{ctx.author.display_name} te pidió poner '{busqueda}' pero no encontraste nada en YouTube.",
+                "No encontré nada con eso 😕",
+            )
             return
 
         was_busy = player.current is not None or bool(player.queue)
         player.add(tracks)
         if len(tracks) > 1:
-            await ctx.send(f"✅ Añadidas **{len(tracks)}** canciones a la cola.")
+            await say(
+                self.bot, ctx.channel,
+                f"{ctx.author.display_name} añadió una playlist de {len(tracks)} canciones a la cola.",
+                f"✅ Añadidas **{len(tracks)}** canciones a la cola.",
+            )
         elif was_busy:
             track = tracks[0]
-            await ctx.send(
-                f"✅ En cola (#{len(player.queue)}): **{track.title}** `{fmt_duration(track.duration)}`"
+            await say(
+                self.bot, ctx.channel,
+                f"{ctx.author.display_name} añadió '{track.title}' a la cola; hay otra canción sonando.",
+                f"✅ En cola (#{len(player.queue)}): **{track.title}** `{fmt_duration(track.duration)}`",
             )
 
     @commands.command(name="join", aliases=["j"], help="Entra a tu canal de voz.")
     async def join(self, ctx: commands.Context) -> None:
         vc = await self.ensure_voice(ctx)
         self.get_player(ctx)
-        await ctx.send(f"🔊 Conectado a **{vc.channel.name}**")
+        await say(
+            self.bot, ctx.channel,
+            f"{ctx.author.display_name} te llamó y entraste al canal de voz '{vc.channel.name}'.",
+            f"🔊 Conectado a **{vc.channel.name}**",
+        )
 
     @commands.command(name="skip", aliases=["s", "next"], help="Salta la canción actual.")
     async def skip(self, ctx: commands.Context) -> None:
-        self.playing_player(ctx).skip()
+        player = self.playing_player(ctx)
+        title = player.current.title
+        player.skip()
         await ctx.message.add_reaction("⏭️")
+        comment_later(self.bot, ctx.channel, f"{ctx.author.display_name} saltó la canción '{title}'.")
 
     @commands.command(name="pause", help="Pausa la reproducción.")
     async def pause(self, ctx: commands.Context) -> None:
@@ -336,6 +359,7 @@ class Music(commands.Cog, name="Música"):
             return
         player.pause()
         await ctx.message.add_reaction("⏸️")
+        comment_later(self.bot, ctx.channel, f"{ctx.author.display_name} pausó la música.")
 
     @commands.command(name="resume", aliases=["r", "continue"], help="Reanuda la reproducción.")
     async def resume(self, ctx: commands.Context) -> None:
@@ -345,6 +369,7 @@ class Music(commands.Cog, name="Música"):
             return
         player.resume()
         await ctx.message.add_reaction("▶️")
+        comment_later(self.bot, ctx.channel, f"{ctx.author.display_name} quitó la pausa y la música sigue.")
 
     @commands.command(name="stop", help="Detiene la música y vacía la cola (sigue en el canal).")
     async def stop(self, ctx: commands.Context) -> None:
@@ -353,6 +378,7 @@ class Music(commands.Cog, name="Música"):
         player.loop_mode = False
         player.skip()
         await ctx.message.add_reaction("⏹️")
+        comment_later(self.bot, ctx.channel, f"{ctx.author.display_name} paró la música y vació la cola.")
 
     @commands.command(name="leave", aliases=["dc", "disconnect"], help="Sale del canal de voz.")
     async def leave(self, ctx: commands.Context) -> None:
@@ -361,6 +387,7 @@ class Music(commands.Cog, name="Música"):
             return
         await self.cleanup(ctx.guild)
         await ctx.message.add_reaction("👋")
+        comment_later(self.bot, ctx.channel, f"{ctx.author.display_name} te pidió que salieras del canal de voz.")
 
     @commands.command(name="queue", aliases=["q", "cola"], help="Muestra la cola. Uso: queue [página]")
     async def queue(self, ctx: commands.Context, pagina: int = 1) -> None:
@@ -409,7 +436,12 @@ class Music(commands.Cog, name="Música"):
     async def loop(self, ctx: commands.Context) -> None:
         player = self.playing_player(ctx)
         player.loop_mode = not player.loop_mode
-        await ctx.send("🔂 Loop activado" if player.loop_mode else "➡️ Loop desactivado")
+        await say(
+            self.bot, ctx.channel,
+            f"{ctx.author.display_name} "
+            + (f"puso '{player.current.title}' en repetición." if player.loop_mode else "quitó la repetición."),
+            "🔂 Loop activado" if player.loop_mode else "➡️ Loop desactivado",
+        )
 
     @commands.command(name="shuffle", help="Mezcla la cola.")
     async def shuffle(self, ctx: commands.Context) -> None:
@@ -421,6 +453,7 @@ class Music(commands.Cog, name="Música"):
         random.shuffle(items)
         player.queue = deque(items)
         await ctx.message.add_reaction("🔀")
+        comment_later(self.bot, ctx.channel, f"{ctx.author.display_name} mezcló el orden de la cola.")
 
     @commands.command(name="remove", aliases=["rm"], help="Quita una canción de la cola. Uso: remove <número>")
     async def remove(self, ctx: commands.Context, numero: int) -> None:
@@ -430,7 +463,11 @@ class Music(commands.Cog, name="Música"):
             return
         track = player.queue[numero - 1]
         del player.queue[numero - 1]
-        await ctx.send(f"🗑️ Quitada: **{track.title}**")
+        await say(
+            self.bot, ctx.channel,
+            f"{ctx.author.display_name} quitó '{track.title}' de la cola.",
+            f"🗑️ Quitada: **{track.title}**",
+        )
 
     @commands.command(name="clear", aliases=["cq"], help="Vacía la cola (sin parar la canción actual).")
     async def clear(self, ctx: commands.Context) -> None:
@@ -487,7 +524,10 @@ class Music(commands.Cog, name="Música"):
         if vc and vc.channel and not [m for m in vc.channel.members if not m.bot]:
             player = self.players.get(guild.id)
             if player:
-                await player._say("Me quedé solo en el canal, me desconecto 👋")
+                await player._say(
+                    "Todos se fueron del canal de voz y te quedaste sin nadie, así que te vas.",
+                    "Me quedé solo en el canal, me desconecto 👋",
+                )
             await self.cleanup(guild)
 
 
