@@ -205,10 +205,25 @@ class GuildPlayer:
                     volume=self.volume,
                 )
 
+                # Si Discord está reconectando la voz, esperamos un poco antes de rendirnos.
+                for _ in range(20):
+                    if vc.is_connected():
+                        break
+                    await asyncio.sleep(0.5)
+
                 self._next.clear()
                 self._started_at = time.monotonic()
                 self._paused_at = None
-                vc.play(source, after=self._after)
+                try:
+                    vc.play(source, after=self._after)
+                except discord.ClientException as exc:
+                    source.cleanup()
+                    log.warning("No se pudo reproducir en %s: %s", self.guild.name, exc)
+                    await self._say(
+                        "Se cortó tu conexión con el canal de voz y tuviste que parar la música.",
+                        "⚠️ Perdí la conexión con el canal de voz. Vuelve a usar play.",
+                    )
+                    break
                 if not repeating:
                     await self._announce(track, info)
                 await self._next.wait()
@@ -290,7 +305,15 @@ class Music(commands.Cog, name="Música"):
             raise commands.CheckFailure("Tienes que estar en un canal de voz.")
         vc = ctx.voice_client
         if vc is None:
-            return await user_voice.channel.connect(self_deaf=True)
+            try:
+                return await user_voice.channel.connect(self_deaf=True, timeout=20)
+            except (asyncio.TimeoutError, discord.ClientException) as exc:
+                log.warning("No se pudo conectar a voz en %s: %s", ctx.guild.name, exc)
+                if ctx.voice_client:
+                    await ctx.voice_client.disconnect(force=True)
+                raise commands.CheckFailure(
+                    "No pude conectarme al canal de voz. Prueba otra vez en unos segundos."
+                ) from exc
         if vc.channel != user_voice.channel:
             if vc.is_playing() or vc.is_paused():
                 raise commands.CheckFailure(f"Ya estoy reproduciendo en **{vc.channel.name}**.")

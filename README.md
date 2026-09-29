@@ -129,6 +129,11 @@ Comandos: `!personaje` (muestra qué personaje usa) y `!reset` / `!olvidar` (bor
   `reiniciar_bot.bat` (actualiza yt-dlp) o `instalar.bat` de nuevo.
 - **El personaje no responde / "no me sale responder"** → revisa `CAI_TOKEN` y `CAI_CHARACTER_ID`;
   el error exacto sale en `logs\bot.log`. Character.AI cambia seguido: `reiniciar_bot.bat` actualiza la librería.
+- **La música se corta, el bot entra y sale del canal o da "Timed out connecting to voice"** → casi
+  siempre son **dos copias del bot a la vez** (la tarea automática + `probar_bot.bat`). Ahora el bot
+  lo impide solo, pero para probar a mano ejecuta antes `detener_bot.bat`.
+- **Character.AI: "maybe your token is invalid?"** → ejecuta `windows\diagnostico_cai.bat`: prueba la
+  conexión de varias formas y muestra el error real.
 - **Cualquier otra cosa** → mira `logs\launcher.log` y `logs\bot.log`.
 
 ## Futuro: Raspberry Pi

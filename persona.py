@@ -53,6 +53,13 @@ CHATS_FILE = DATA_DIR / "cai_chats.json"
 PROFILE_FILE = DATA_DIR / "cai_profile.json"
 NO_MENTIONS = discord.AllowedMentions.none()
 
+# Character.AI rechaza el websocket del chat (error "maybe your token is invalid?")
+# si no llegan estas cabeceras, igual que las manda la web.
+WS_HEADERS = {
+    "Origin": "https://character.ai",
+    "Authorization": f"Token {CAI_TOKEN}",
+}
+
 
 def _load_json(path: Path) -> dict:
     try:
@@ -64,6 +71,15 @@ def _load_json(path: Path) -> dict:
 def _save_json(path: Path, data: dict) -> None:
     DATA_DIR.mkdir(exist_ok=True)
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _describe(exc: BaseException) -> str:
+    """Texto del error incluyendo la causa real (la librería la esconde tras mensajes genéricos)."""
+    parts = []
+    while exc is not None and len(parts) < 4:
+        parts.append(f"{type(exc).__name__}: {exc}")
+        exc = exc.__cause__ or exc.__context__
+    return " <- ".join(parts)
 
 
 def _split(text: str, size: int = 2000) -> list[str]:
@@ -110,7 +126,7 @@ class Persona(commands.Cog, name="Personaje"):
             await self._close_client()
             self._broken = False
         if self.client is None:
-            self.client = await get_client(token=CAI_TOKEN)
+            self.client = await get_client(token=CAI_TOKEN, websocket_headers=WS_HEADERS)
             if self.character is None:
                 self.character = await self.client.character.fetch_character_info(CAI_CHARACTER_ID)
                 log.info("Personaje cargado: %s", self.character.name)
@@ -135,7 +151,7 @@ class Persona(commands.Cog, name="Personaje"):
                     return None
                 return candidate.text.strip()
             except Exception as exc:
-                log.warning("Error con Character.AI (intento %d): %s", attempt, exc)
+                log.warning("Error con Character.AI (intento %d): %s", attempt, _describe(exc))
                 self._broken = True
                 if attempt == 2 and isinstance(exc, ActionError):
                     # El chat pudo haberse borrado en Character.AI: la próxima vez se crea otro.
@@ -214,7 +230,7 @@ class Persona(commands.Cog, name="Personaje"):
                     await self._ensure_client()
         except Exception as exc:
             self._broken = True
-            log.error("No se pudo conectar con Character.AI (¿token o ID del personaje incorrectos?): %s", exc)
+            log.error("No se pudo conectar con Character.AI (¿token o ID del personaje incorrectos?): %s", _describe(exc))
             return
         await self._apply_profile()
 
