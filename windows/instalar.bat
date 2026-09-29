@@ -4,10 +4,13 @@ cd /d "%~dp0.."
 echo === Instalacion del bot de musica ===
 echo.
 
-where python >nul 2>&1
+rem "python" puede ser el acceso directo falso de Microsoft Store, por eso probamos que funcione
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] No se encontro Python. Instalalo desde https://www.python.org/downloads/
+    echo [ERROR] No se encontro Python 3.11 o superior.
+    echo         Instalalo desde https://www.python.org/downloads/
     echo         y marca la casilla "Add python.exe to PATH" durante la instalacion.
+    echo         Luego cierra esta ventana y vuelve a ejecutar instalar.bat
     pause
     exit /b 1
 )
