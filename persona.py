@@ -56,9 +56,16 @@ PROFILE_FILE = DATA_DIR / "cai_profile.json"
 NO_MENTIONS = discord.AllowedMentions.none()
 
 # Navegador que imitamos al hablar con Character.AI (su web actual rechaza el que trae la librería).
-CAI_IMPERSONATE = os.getenv("CAI_IMPERSONATE", "chrome").strip() or "chrome"
+CAI_IMPERSONATE = os.getenv("CAI_IMPERSONATE", "firefox147").strip() or "firefox147"
+# Cookie de sesión de la web (web-next-auth). Character.AI la pide para abrir el chat.
+CAI_WEB_NEXT_AUTH = os.getenv("CAI_WEB_NEXT_AUTH", "").strip()
 if get_client is not None:
-    cai_compat.install(impersonate=CAI_IMPERSONATE, warmup=_env_bool("CAI_WARMUP", True))
+    cai_compat.install(
+        impersonate=CAI_IMPERSONATE,
+        warmup=_env_bool("CAI_WARMUP", True),
+        web_next_auth=CAI_WEB_NEXT_AUTH,
+        quote_token=_env_bool("CAI_QUOTE_TOKEN", True),
+    )
 
 
 def _load_json(path: Path) -> dict:
@@ -126,7 +133,9 @@ class Persona(commands.Cog, name="Personaje"):
             await self._close_client()
             self._broken = False
         if self.client is None:
-            self.client = await get_client(token=CAI_TOKEN, impersonate=CAI_IMPERSONATE)
+            self.client = await get_client(
+                token=CAI_TOKEN, impersonate=CAI_IMPERSONATE, web_next_auth=CAI_WEB_NEXT_AUTH
+            )
             if self.character is None:
                 self.character = await self.client.character.fetch_character_info(CAI_CHARACTER_ID)
                 log.info("Personaje cargado: %s", self.character.name)

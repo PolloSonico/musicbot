@@ -43,21 +43,27 @@ async def main() -> None:
     from importlib.metadata import version
 
     print("PyCharacterAI", version("PyCharacterAI"), "| curl_cffi", curl_cffi.__version__)
+    wna = persona.CAI_WEB_NEXT_AUTH
+    if not wna:
+        print("\n(!) No hay CAI_WEB_NEXT_AUTH en .env: casi seguro hace falta. Mira el README.")
 
+    base = dict(impersonate="firefox147", warmup=True, web_next_auth=wna, quote_token=True, auth_header=False)
     variantes = [
-        ("chrome", True), ("chrome", False),
-        ("chrome131", True), ("edge101", True),
-        ("safari", True), ("firefox147", True), ("firefox135", True),
+        ("como el navegador (firefox)", {}, {}),
+        ("token sin comillas", {"quote_token": False}, {"CAI_QUOTE_TOKEN": "false"}),
+        ("imitando chrome", {"impersonate": "chrome"}, {"CAI_IMPERSONATE": "chrome"}),
+        ("sin visita previa", {"warmup": False}, {"CAI_WARMUP": "false"}),
     ]
-    for navegador, warmup in variantes:
-        cai_compat.install(impersonate=navegador, warmup=warmup)
-        nombre = f"imitando {navegador}" + (" + visita previa" if warmup else "")
-        if await probar(nombre, impersonate=navegador):
-            print(f"\n>>> FUNCIONA con: {nombre}")
-            if navegador != "chrome":
-                print(f">>> Pon esta linea en tu .env:  CAI_IMPERSONATE={navegador}")
-            if not warmup:
-                print(">>> Pon esta linea en tu .env:  CAI_WARMUP=false")
+    if wna:
+        variantes.append(("SIN web-next-auth", {"web_next_auth": ""}, {"CAI_WEB_NEXT_AUTH": ""}))
+
+    for nombre, cambios, env in variantes:
+        opciones = {**base, **cambios}
+        cai_compat.install(**opciones)
+        if await probar(nombre, impersonate=opciones["impersonate"], web_next_auth=opciones["web_next_auth"]):
+            print(f"\n>>> FUNCIONA: {nombre}")
+            for clave, valor in env.items():
+                print(f">>> Pon esta linea en tu .env:  {clave}={valor}")
             return
     print("\n>>> Ninguna variante funciono. Pasale este resultado a Claude.")
 

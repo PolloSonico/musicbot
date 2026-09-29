@@ -112,6 +112,7 @@ Para activarlo, añade al `.env`:
 | Variable | Qué es |
 |---|---|
 | `CAI_TOKEN` | Tu token de usuario de Character.AI |
+| `CAI_WEB_NEXT_AUTH` | Cookie de sesión de la web (ver `.env.example` para sacarla) |
 | `CAI_CHARACTER_ID` | El ID del personaje: lo último del link del chat, `character.ai/chat/`**`ESTO`** |
 | `CAI_CHANNELS` | (opcional) IDs de canales donde responde a todo, separados por coma |
 
