@@ -38,11 +38,28 @@ async def main() -> None:
     if not persona.CAI_TOKEN or not persona.CAI_CHARACTER_ID:
         print("Falta CAI_TOKEN o CAI_CHARACTER_ID en .env")
         return
-    import PyCharacterAI, curl_cffi  # noqa: E401
-    print("PyCharacterAI", getattr(PyCharacterAI, "__version__", "?"), "| curl_cffi", curl_cffi.__version__)
-    await probar("sin cabeceras extra (como antes)")
-    await probar("con cabeceras Origin + Authorization (lo que usa el bot)", websocket_headers=persona.WS_HEADERS)
-    await probar("solo Origin", websocket_headers={"Origin": "https://character.ai"})
+    import cai_compat
+    import curl_cffi
+    from importlib.metadata import version
+
+    print("PyCharacterAI", version("PyCharacterAI"), "| curl_cffi", curl_cffi.__version__)
+
+    variantes = [
+        ("chrome", True), ("chrome", False),
+        ("chrome131", True), ("edge101", True),
+        ("safari", True), ("firefox147", True), ("firefox135", True),
+    ]
+    for navegador, warmup in variantes:
+        cai_compat.install(impersonate=navegador, warmup=warmup)
+        nombre = f"imitando {navegador}" + (" + visita previa" if warmup else "")
+        if await probar(nombre, impersonate=navegador):
+            print(f"\n>>> FUNCIONA con: {nombre}")
+            if navegador != "chrome":
+                print(f">>> Pon esta linea en tu .env:  CAI_IMPERSONATE={navegador}")
+            if not warmup:
+                print(">>> Pon esta linea en tu .env:  CAI_WARMUP=false")
+            return
+    print("\n>>> Ninguna variante funciono. Pasale este resultado a Claude.")
 
 
 if __name__ == "__main__":

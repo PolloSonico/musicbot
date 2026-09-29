@@ -24,6 +24,8 @@ from discord.ext import commands
 try:
     from PyCharacterAI import get_client
     from PyCharacterAI.exceptions import ActionError
+
+    import cai_compat
 except ImportError:  # librería no instalada: el bot funciona igual, con textos fijos
     get_client = None
     ActionError = Exception
@@ -53,12 +55,10 @@ CHATS_FILE = DATA_DIR / "cai_chats.json"
 PROFILE_FILE = DATA_DIR / "cai_profile.json"
 NO_MENTIONS = discord.AllowedMentions.none()
 
-# Character.AI rechaza el websocket del chat (error "maybe your token is invalid?")
-# si no llegan estas cabeceras, igual que las manda la web.
-WS_HEADERS = {
-    "Origin": "https://character.ai",
-    "Authorization": f"Token {CAI_TOKEN}",
-}
+# Navegador que imitamos al hablar con Character.AI (su web actual rechaza el que trae la librería).
+CAI_IMPERSONATE = os.getenv("CAI_IMPERSONATE", "chrome").strip() or "chrome"
+if get_client is not None:
+    cai_compat.install(impersonate=CAI_IMPERSONATE, warmup=_env_bool("CAI_WARMUP", True))
 
 
 def _load_json(path: Path) -> dict:
@@ -126,7 +126,7 @@ class Persona(commands.Cog, name="Personaje"):
             await self._close_client()
             self._broken = False
         if self.client is None:
-            self.client = await get_client(token=CAI_TOKEN, websocket_headers=WS_HEADERS)
+            self.client = await get_client(token=CAI_TOKEN, impersonate=CAI_IMPERSONATE)
             if self.character is None:
                 self.character = await self.client.character.fetch_character_info(CAI_CHARACTER_ID)
                 log.info("Personaje cargado: %s", self.character.name)
