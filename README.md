@@ -95,30 +95,40 @@ Logs: `logs\bot.log` (lo que hace el bot) y `logs\launcher.log` (arranques, actu
 El bot también sale solo del canal si se queda sin nadie durante 1 minuto o sin música
 durante `IDLE_MINUTES`.
 
-## 🦌 Personaje de Character.AI (opcional)
+## 🦌 Personaje con IA (opcional)
 
-El bot puede hablar como un personaje de [Character.AI](https://character.ai) (por ejemplo Lillia):
+El bot puede hablar como un personaje, por defecto **Lillia** de League of Legends, usando
+**Google Gemini**, que es gratis con un límite diario:
 
 - **Charla:** responde si lo mencionas (`@Bot hola`), si respondes a uno de sus mensajes, si usas el
   prefijo con algo que no es un comando (`!hola Lillia, ¿cómo estás?`), por mensaje privado, o a
-  todo en los canales que pongas en `CAI_CHANNELS`. Recuerda la conversación de cada canal
+  todo en los canales que pongas en `PERSONA_CHANNELS`. Recuerda la conversación de cada canal
   (`!reset` la borra).
 - **Música con personalidad:** los avisos (canción en cola, qué está sonando, skip, errores,
   desconexión...) los dice el personaje. Debajo sigue apareciendo el dato en pequeño.
-- **Nombre y avatar:** el bot se pone el apodo y la foto del personaje (`CAI_USE_PROFILE`).
+- **Nombre y avatar:** el bot se pone el apodo (y el avatar, si hay imagen) del personaje.
 
-Para activarlo, añade al `.env`:
+### Activarlo
+1. Entra a <https://aistudio.google.com/apikey> con tu cuenta de Google, pulsa **Create API key** y cópiala.
+2. En tu `.env` añade `GEMINI_API_KEY=la_clave` (mira `.env.example` para todas las opciones).
+3. Ejecuta `windows\diagnostico_ia.bat` para comprobar que funciona, y después `reiniciar_bot.bat`.
 
-| Variable | Qué es |
-|---|---|
-| `CAI_TOKEN` | Tu token de usuario de Character.AI |
-| `CAI_CHARACTER_ID` | El ID del personaje: lo último del link del chat, `character.ai/chat/`**`ESTO`** |
-| `CAI_CHANNELS` | (opcional) IDs de canales donde responde a todo, separados por coma |
+### Cambiar o editar el personaje
+- La personalidad de Lillia está en **`personajes/lillia.txt`**: edítalo con el Bloc de notas
+  (cómo habla, su historia, sus manías...) y reinicia el bot.
+- También puedes usar una **character card** de [chub.ai](https://chub.ai): descarga el personaje
+  como PNG, ponlo en la carpeta `personajes` y en `.env` pon `PERSONA_FILE=personajes/archivo.png`.
 
-Mira `.env.example` para ver todas las opciones. Si Character.AI no responde o no está configurado,
-el bot sigue funcionando con los textos fijos de siempre.
+### Si se acaba el cupo gratis
+El bot usa el mejor modelo gratuito y, si se le acaba el cupo, pasa al siguiente. Si se acaban todos:
+- **la música sigue funcionando normal**, con los textos fijos y sin esperas;
+- si alguien le habla, avisa una vez que "se quedó dormida" y a qué hora vuelve (después solo reacciona con 😴);
+- a medianoche (hora de EE. UU.) se renueva el cupo y vuelve a hablar sola.
 
-Comandos: `!personaje` (muestra qué personaje usa) y `!reset` / `!olvidar` (borra su memoria en el canal).
+Para gastar menos cupo: `PERSONA_MUSIC_COMMENTS=false` (no comenta la música) y no uses `PERSONA_CHANNELS`.
+
+Comandos: `!personaje` (qué personaje e IA usa y si le queda cupo) y `!reset` / `!olvidar`
+(borra su memoria en el canal).
 
 ## Problemas comunes
 
@@ -127,13 +137,11 @@ Comandos: `!personaje` (muestra qué personaje usa) y `!reset` / `!olvidar` (bor
   `ffmpeg.exe` en `FFMPEG_PATH` y ejecuta `reiniciar_bot.bat`.
 - **"No pude reproducir..." en todas las canciones** → YouTube cambió algo; ejecuta
   `reiniciar_bot.bat` (actualiza yt-dlp) o `instalar.bat` de nuevo.
-- **El personaje no responde / "no me sale responder"** → revisa `CAI_TOKEN` y `CAI_CHARACTER_ID`;
-  el error exacto sale en `logs\bot.log`. Character.AI cambia seguido: `reiniciar_bot.bat` actualiza la librería.
+- **El personaje no responde / "no me sale responder"** → ejecuta `windows\diagnostico_ia.bat`:
+  muestra si la clave funciona, qué modelos usa y si queda cupo. El error exacto sale en `logs\bot.log`.
 - **La música se corta, el bot entra y sale del canal o da "Timed out connecting to voice"** → casi
   siempre son **dos copias del bot a la vez** (la tarea automática + `probar_bot.bat`). Ahora el bot
   lo impide solo, pero para probar a mano ejecuta antes `detener_bot.bat`.
-- **Character.AI: "maybe your token is invalid?"** → ejecuta `windows\diagnostico_cai.bat`: prueba la
-  conexión de varias formas y muestra el error real.
 - **Cualquier otra cosa** → mira `logs\launcher.log` y `logs\bot.log`.
 
 ## Futuro: Raspberry Pi
