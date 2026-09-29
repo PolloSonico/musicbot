@@ -149,13 +149,14 @@ class Persona(commands.Cog, name="Personaje"):
         text: str,
         timeout: float = REPLY_TIMEOUT,
         wait: bool = True,
+        fast: bool = False,
     ) -> Optional[str]:
         """Manda un mensaje al personaje (una conversación por canal). None si no hay respuesta."""
         if not self.available():
             return None
         try:
             async with asyncio.timeout(timeout):
-                return await self.backend.ask(str(channel.id), text, self._context(channel), wait)
+                return await self.backend.ask(str(channel.id), text, self._context(channel), wait, fast)
         except TimeoutError:
             log.warning("%s tardó más de %ss en responder", self.backend.provider, timeout)
         except Exception:
@@ -167,7 +168,7 @@ class Persona(commands.Cog, name="Personaje"):
         if not (MUSIC_COMMENTS and self.available()):
             return None
         prompt = f"(({situation} Reacciona en personaje, en {LANGUAGE}, con una o dos frases cortas.))"
-        return await self.ask(channel, prompt, COMMENT_TIMEOUT, wait=False)
+        return await self.ask(channel, prompt, COMMENT_TIMEOUT, wait=False, fast=True)
 
     # ---------- Arranque y perfil (nombre y avatar) ----------
 
