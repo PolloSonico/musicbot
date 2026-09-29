@@ -65,7 +65,7 @@ Crea la tarea **"MusicBot Discord"** en el Programador de tareas, que:
 |---|---|
 | `registrar_tarea.bat` | Crea/actualiza la tarea y arranca el bot |
 | `reiniciar_bot.bat` | Reinicia el bot (p. ej. después de cambiar `.env` o el código) |
-| `detener_bot.bat` | Lo detiene hasta el próximo encendido |
+| `detener_bot.bat` | Lo apaga del todo (tampoco arranca al encender el PC) hasta que uses `reiniciar_bot.bat` |
 | `quitar_tarea.bat` | Borra la tarea: deja de arrancar con el PC |
 
 Logs: `logs\bot.log` (lo que hace el bot) y `logs\launcher.log` (arranques, actualizaciones y errores).
@@ -106,6 +106,9 @@ El bot puede hablar como un personaje, por defecto **Lillia** de League of Legen
   (`!reset` la borra).
 - **Música con personalidad:** los avisos (canción en cola, qué está sonando, skip, errores,
   desconexión...) los dice el personaje. Debajo sigue apareciendo el dato en pequeño.
+- **Curiosidades:** de vez en cuando (15% de las canciones, máximo una vez al día) comenta por su
+  cuenta algún dato de la canción que suena: la banda, la letra, la melodía... Se ajusta con
+  `PERSONA_TRIVIA_CHANCE` y `PERSONA_TRIVIA_PER_DAY`.
 - **Nombre y avatar:** el bot se pone el apodo (y el avatar, si hay imagen) del personaje.
 
 ### Activarlo

@@ -16,11 +16,12 @@ import hashlib
 import json
 import logging
 import os
+import random
 import re
 from collections import deque
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import discord
 from discord.ext import commands
@@ -53,11 +54,15 @@ LANGUAGE = _env("PERSONA_LANGUAGE", "CAI_LANGUAGE", default="español")
 MUSIC_COMMENTS = _env_bool("PERSONA_MUSIC_COMMENTS", "CAI_MUSIC_COMMENTS", default=True)
 USE_PROFILE = _env_bool("PERSONA_USE_PROFILE", "CAI_USE_PROFILE", default=True)
 ALLOW_DM = _env_bool("PERSONA_ALLOW_DM", "CAI_ALLOW_DM", default=True)
+# Curiosidades sobre la canción que suena: probabilidad por canción y máximo por día.
+TRIVIA_CHANCE = float(_env("PERSONA_TRIVIA_CHANCE", default="0.15"))
+TRIVIA_PER_DAY = int(_env("PERSONA_TRIVIA_PER_DAY", default="1"))
 
 REPLY_TIMEOUT = 45
 COMMENT_TIMEOUT = 15
 DATA_DIR = Path(__file__).resolve().parent / "data"
 PROFILE_FILE = DATA_DIR / "perfil.json"
+TRIVIA_FILE = DATA_DIR / "curiosidades.json"
 NO_MENTIONS = discord.AllowedMentions.none()
 
 
@@ -382,6 +387,71 @@ def comment_later(bot: commands.Bot, channel: discord.abc.Messageable, situation
                 await channel.send(line, allowed_mentions=NO_MENTIONS)
             except discord.HTTPException:
                 pass
+
+    task = asyncio.create_task(run())
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
+_trivia_pending = False
+
+
+def _trivia_count_today() -> int:
+    try:
+        state = json.loads(TRIVIA_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    return state.get("count", 0) if state.get("date") == date.today().isoformat() else 0
+
+
+def maybe_song_trivia(
+    bot: commands.Bot,
+    channel: discord.abc.Messageable,
+    title: str,
+    duration: Optional[int],
+    still_playing: Callable[[], bool],
+) -> None:
+    """Con poca probabilidad (y como mucho TRIVIA_PER_DAY veces al día), el personaje comenta
+    por su cuenta algo sobre la canción que está sonando. Nunca retrasa la música."""
+    global _trivia_pending
+    if _trivia_pending or TRIVIA_PER_DAY <= 0 or _persona(bot) is None:
+        return
+    if random.random() >= TRIVIA_CHANCE or _trivia_count_today() >= TRIVIA_PER_DAY:
+        return
+    _trivia_pending = True
+
+    async def run() -> None:
+        global _trivia_pending
+        try:
+            # Que suene un rato antes de comentar (y no después de la mitad si es corta).
+            delay = random.uniform(40, 100)
+            if duration:
+                delay = min(delay, duration * 0.5)
+            await asyncio.sleep(delay)
+            persona = _persona(bot)
+            if persona is None or not still_playing() or _trivia_count_today() >= TRIVIA_PER_DAY:
+                return
+            prompt = (
+                f"((Mientras suena '{title}', por iniciativa propia se te ocurre comentar algo sobre esa "
+                "canción: un dato curioso del artista o la banda, algo de la melodía, de qué trata la "
+                "letra o de su historia. Cuenta solo datos que conozcas de verdad; si no conoces la "
+                "canción, comenta lo que te hace sentir sin inventar datos. En personaje, en "
+                f"{LANGUAGE}, dos o tres frases, con emojis.))"
+            )
+            line = await persona.ask(channel, prompt, REPLY_TIMEOUT, wait=False)
+            if not line or not still_playing():
+                return
+            await channel.send(line, allowed_mentions=NO_MENTIONS)
+            DATA_DIR.mkdir(exist_ok=True)
+            TRIVIA_FILE.write_text(
+                json.dumps({"date": date.today().isoformat(), "count": _trivia_count_today() + 1}),
+                encoding="utf-8",
+            )
+            log.info("Curiosidad sobre '%s' enviada", title)
+        except Exception:
+            log.exception("No se pudo enviar la curiosidad de la canción")
+        finally:
+            _trivia_pending = False
 
     task = asyncio.create_task(run())
     _background.add(task)

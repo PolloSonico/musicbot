@@ -73,6 +73,23 @@ def _cooldown_for(exc: errors.APIError) -> float:
     return time.time() + max(delay, 5.0)
 
 
+# Acciones de rol entre asteriscos o guiones bajos, como *mueve las orejitas* o _sonríe_.
+# Solo si tienen varias palabras: un énfasis de una palabra (*eep*) se deja.
+_ACTION_RE = re.compile(r"(?<![*\w])([*_])(?![*_\s])([^*_\n]*?\s[^*_\n]*?)(?<![\s*_])\1(?![*\w])")
+
+
+def strip_actions(text: str) -> str:
+    """Quita las acciones de rol (*así*) que el personaje no debe escribir; usa emojis en su lugar."""
+    cleaned = _ACTION_RE.sub("", text)
+    cleaned = re.sub(r"[ \t]+([,.!?…])", r"\1", cleaned)  # espacios que quedaron antes de puntuación
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = "\n".join(line.strip() for line in cleaned.splitlines())
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    if not cleaned and text.strip():
+        return "✨"  # el mensaje era solo una acción: queda un emoji en su lugar
+    return cleaned
+
+
 def build_system_prompt(character: Character, language: str) -> str:
     return (
         f"{character.prompt}\n\n"
@@ -89,7 +106,9 @@ def build_system_prompt(character: Character, language: str) -> str:
         "(artista, de qué trata la letra), pero si no la conoces, no inventes: dilo con tu estilo.\n"
         f"- Responde siempre en {language}, con mensajes cortos (1 a 4 frases) salvo que te pidan "
         "algo largo. No empieces tus mensajes con tu nombre.\n"
-        "- Puedes usar *acciones entre asteriscos* y algún emoji, sin abusar."
+        "- NO describas acciones, gestos ni estados de ánimo con texto entre asteriscos o en cursiva "
+        "(nada de *mueve las orejitas* o *sonríe*). Para expresar lo que haces o sientes usa emojis "
+        "(por ejemplo 🌸😳✨🦌💤🌿🥺), sin abusar: uno a tres por mensaje."
     )
 
 
@@ -103,6 +122,13 @@ class GeminiBackend:
         self.preferred = models
         self.models: list[str] = []
         self.history: dict[str, list[dict]] = _load(HISTORY_FILE)
+        # Limpia acciones viejas guardadas en la memoria, para que no las siga imitando.
+        for turns in self.history.values():
+            for turn in turns:
+                if turn.get("role") == "model":
+                    for part in turn.get("parts", []):
+                        if "text" in part:
+                            part["text"] = strip_actions(part["text"])
         state = _load(STATE_FILE)
         self.cooldowns: dict[str, float] = state.get("cooldowns", {})
         self.thinking: dict[str, int] = state.get("thinking", {})
@@ -242,6 +268,7 @@ class GeminiBackend:
             prefix = f"{self.character.name}:"
             if reply.startswith(prefix):
                 reply = reply[len(prefix):].strip()
+            reply = strip_actions(reply) if reply else reply
             if not reply:
                 log.info("Gemini no devolvió texto (¿filtro de seguridad?) con %s", model)
             return reply or None

@@ -23,10 +23,13 @@ function Stop-Bot {
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
         Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     }
-    # Por si quedaron procesos del bot sueltos
-    Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe' OR Name='cmd.exe'" |
-        Where-Object { $_.CommandLine -and $_.CommandLine -like "*$Root*" -and
-                       ($_.CommandLine -like "*bot.py*" -or $_.CommandLine -like "*\iniciar_bot.bat*") } |
+    # Procesos sueltos del bot: el lanzador (cmd) y Python. Python se busca por "bot.py" en su
+    # linea de comandos (sin exigir la carpeta: las versiones viejas lo lanzaban con ruta relativa).
+    Get-CimInstance Win32_Process |
+        Where-Object { $_.CommandLine -and (
+            ($_.Name -like "python*" -and $_.CommandLine -match '(^|[ \\"])bot\.py') -or
+            ($_.Name -eq "cmd.exe" -and $_.CommandLine -like "*\iniciar_bot.bat*")
+        ) } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
@@ -71,12 +74,18 @@ switch ($Accion) {
     }
     "reiniciar" {
         Stop-Bot
+        Enable-ScheduledTask -TaskName $TaskName | Out-Null
         Start-ScheduledTask -TaskName $TaskName
         Write-Host "Bot reiniciado." -ForegroundColor Green
     }
     "detener" {
+        # Se deshabilita la tarea para que su reintento automatico no la vuelva a lanzar.
+        if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+            Disable-ScheduledTask -TaskName $TaskName | Out-Null
+        }
         Stop-Bot
-        Write-Host "Bot detenido (volvera a arrancar en el proximo encendido)." -ForegroundColor Yellow
+        Write-Host "Bot detenido. Queda apagado (tampoco arranca al encender el PC)" -ForegroundColor Yellow
+        Write-Host "hasta que ejecutes reiniciar_bot.bat." -ForegroundColor Yellow
     }
 }
 Read-Host "Pulsa Enter para cerrar"
