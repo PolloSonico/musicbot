@@ -95,6 +95,31 @@ Logs: `logs\bot.log` (lo que hace el bot) y `logs\launcher.log` (arranques, actu
 El bot también sale solo del canal si se queda sin nadie durante 1 minuto o sin música
 durante `IDLE_MINUTES`.
 
+## 🦌 Personaje de Character.AI (opcional)
+
+El bot puede hablar como un personaje de [Character.AI](https://character.ai) (por ejemplo Lillia):
+
+- **Charla:** responde si lo mencionas (`@Bot hola`), si respondes a uno de sus mensajes, si usas el
+  prefijo con algo que no es un comando (`!hola Lillia, ¿cómo estás?`), por mensaje privado, o a
+  todo en los canales que pongas en `CAI_CHANNELS`. Recuerda la conversación de cada canal
+  (`!reset` la borra).
+- **Música con personalidad:** los avisos (canción en cola, qué está sonando, skip, errores,
+  desconexión...) los dice el personaje. Debajo sigue apareciendo el dato en pequeño.
+- **Nombre y avatar:** el bot se pone el apodo y la foto del personaje (`CAI_USE_PROFILE`).
+
+Para activarlo, añade al `.env`:
+
+| Variable | Qué es |
+|---|---|
+| `CAI_TOKEN` | Tu token de usuario de Character.AI |
+| `CAI_CHARACTER_ID` | El ID del personaje: lo último del link del chat, `character.ai/chat/`**`ESTO`** |
+| `CAI_CHANNELS` | (opcional) IDs de canales donde responde a todo, separados por coma |
+
+Mira `.env.example` para ver todas las opciones. Si Character.AI no responde o no está configurado,
+el bot sigue funcionando con los textos fijos de siempre.
+
+Comandos: `!personaje` (muestra qué personaje usa) y `!reset` / `!olvidar` (borra su memoria en el canal).
+
 ## Problemas comunes
 
 - **No responde a los comandos** → activa *MESSAGE CONTENT INTENT* (paso 1) y revisa el prefijo en `.env`.
@@ -102,6 +127,8 @@ durante `IDLE_MINUTES`.
   `ffmpeg.exe` en `FFMPEG_PATH` y ejecuta `reiniciar_bot.bat`.
 - **"No pude reproducir..." en todas las canciones** → YouTube cambió algo; ejecuta
   `reiniciar_bot.bat` (actualiza yt-dlp) o `instalar.bat` de nuevo.
+- **El personaje no responde / "no me sale responder"** → revisa `CAI_TOKEN` y `CAI_CHARACTER_ID`;
+  el error exacto sale en `logs\bot.log`. Character.AI cambia seguido: `reiniciar_bot.bat` actualiza la librería.
 - **Cualquier otra cosa** → mira `logs\launcher.log` y `logs\bot.log`.
 
 ## Futuro: Raspberry Pi
