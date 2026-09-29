@@ -11,7 +11,7 @@ echo [%date% %time%] Actualizando yt-dlp y librerias de IA... >> logs\launcher.l
 :loop
 
 echo [%date% %time%] Iniciando bot >> logs\launcher.log
-".venv\Scripts\python.exe" bot.py >> logs\launcher.log 2>&1
+".venv\Scripts\python.exe" "%cd%\bot.py" >> logs\launcher.log 2>&1
 echo [%date% %time%] El bot se cerro (codigo %errorlevel%). Reiniciando en 15 s... >> logs\launcher.log
 
 rem "timeout" no funciona sin consola (tarea programada), por eso usamos ping como espera

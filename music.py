@@ -12,7 +12,7 @@ import discord
 import yt_dlp
 from discord.ext import commands
 
-from persona import comment_later, say
+from persona import comment_later, maybe_song_trivia, say
 
 log = logging.getLogger("music")
 
@@ -226,6 +226,10 @@ class GuildPlayer:
                     break
                 if not repeating:
                     await self._announce(track, info)
+                    maybe_song_trivia(
+                        self.bot, self.channel, track.title, track.duration or info.get("duration"),
+                        lambda t=track: self.current is t,
+                    )
                 await self._next.wait()
         except asyncio.CancelledError:
             raise
