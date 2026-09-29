@@ -2,6 +2,7 @@ import asyncio
 import logging
 import logging.handlers
 import os
+import socket
 from pathlib import Path
 
 import discord
@@ -13,6 +14,9 @@ load_dotenv(BASE_DIR / ".env")
 
 TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 PREFIX = os.getenv("PREFIX", "!").strip() or "!"
+# Puerto local usado solo como "candado" para que no corran dos copias del bot a la vez
+# (dos copias con el mismo token se pelean por el canal de voz y la música se corta).
+INSTANCE_PORT = 47821
 
 
 def setup_logging() -> None:
@@ -79,8 +83,21 @@ class MusicBot(commands.Bot):
         await ctx.send("Ocurrió un error inesperado. Revisa `logs/bot.log`.")
 
 
+def acquire_single_instance() -> socket.socket:
+    lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        lock.bind(("127.0.0.1", INSTANCE_PORT))
+    except OSError:
+        raise SystemExit(
+            "Ya hay otra copia del bot funcionando (probablemente la tarea automática).\n"
+            "Si quieres probarlo a mano, primero ejecuta windows\\detener_bot.bat"
+        )
+    return lock
+
+
 async def main() -> None:
     setup_logging()
+    _lock = acquire_single_instance()  # se libera sola al cerrar el bot
     if not TOKEN or TOKEN == "pega_aqui_tu_token":
         raise SystemExit("Falta DISCORD_TOKEN en el archivo .env")
     bot = MusicBot()
