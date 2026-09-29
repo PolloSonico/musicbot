@@ -1,11 +1,14 @@
-"""Personaje de Character.AI: le da voz propia al bot.
+"""Personaje con IA: le da voz propia al bot.
 
 - Responde cuando le hablan: mencionándolo, respondiendo a sus mensajes, con el prefijo
   seguido de algo que no es un comando (ej: "!hola Lillia"), por DM, o en los canales
-  de CAI_CHANNELS (ahí responde a todo).
+  de PERSONA_CHANNELS (ahí responde a todo).
 - El resto del bot usa say() / comment_later() para que los avisos (canción en cola,
-  desconexión, errores...) los diga el personaje en vez de textos fijos. Si Character.AI
-  no está configurado o no responde a tiempo, se usa el texto fijo de siempre.
+  desconexión, errores...) los diga el personaje en vez de textos fijos.
+- La IA NUNCA bloquea la música: si no está configurada, no responde a tiempo o se acabó el
+  cupo diario, se usan al instante los textos fijos de siempre.
+
+Proveedores (AI_PROVIDER en .env): "gemini" (recomendado) o "characterai".
 """
 
 import asyncio
@@ -14,208 +17,169 @@ import json
 import logging
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import aiohttp
 import discord
 from discord.ext import commands
-
-try:
-    from PyCharacterAI import get_client
-    from PyCharacterAI.exceptions import ActionError
-
-    import cai_compat
-except ImportError:  # librería no instalada: el bot funciona igual, con textos fijos
-    get_client = None
-    ActionError = Exception
 
 log = logging.getLogger("persona")
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None or not value.strip():
-        return default
-    return value.strip().lower() in ("1", "true", "si", "sí", "yes", "y")
+def _env(*names: str, default: str = "") -> str:
+    """Primer valor definido entre varios nombres (los CAI_* viejos siguen funcionando)."""
+    for name in names:
+        value = os.getenv(name)
+        if value is not None and value.strip():
+            return value.strip()
+    return default
 
 
-CAI_TOKEN = os.getenv("CAI_TOKEN", "").strip()
-CAI_CHARACTER_ID = os.getenv("CAI_CHARACTER_ID", "").strip()
-CAI_CHANNELS = {int(x) for x in re.findall(r"\d+", os.getenv("CAI_CHANNELS", ""))}
-CAI_LANGUAGE = os.getenv("CAI_LANGUAGE", "español").strip() or "español"
-CAI_MUSIC_COMMENTS = _env_bool("CAI_MUSIC_COMMENTS", True)
-CAI_USE_PROFILE = _env_bool("CAI_USE_PROFILE", True)
-CAI_ALLOW_DM = _env_bool("CAI_ALLOW_DM", True)
+def _env_bool(*names: str, default: bool) -> bool:
+    value = _env(*names).lower()
+    return default if not value else value in ("1", "true", "si", "sí", "yes", "y")
+
+
+AI_PROVIDER = _env("AI_PROVIDER").lower()
+GEMINI_API_KEY = _env("GEMINI_API_KEY")
+GEMINI_MODELS = [m.strip() for m in _env("GEMINI_MODEL").split(",") if m.strip()]
+CAI_TOKEN = _env("CAI_TOKEN")
+CAI_CHARACTER_ID = _env("CAI_CHARACTER_ID")
+
+CHANNELS = {int(x) for x in re.findall(r"\d+", _env("PERSONA_CHANNELS", "CAI_CHANNELS"))}
+LANGUAGE = _env("PERSONA_LANGUAGE", "CAI_LANGUAGE", default="español")
+MUSIC_COMMENTS = _env_bool("PERSONA_MUSIC_COMMENTS", "CAI_MUSIC_COMMENTS", default=True)
+USE_PROFILE = _env_bool("PERSONA_USE_PROFILE", "CAI_USE_PROFILE", default=True)
+ALLOW_DM = _env_bool("PERSONA_ALLOW_DM", "CAI_ALLOW_DM", default=True)
 
 REPLY_TIMEOUT = 45
 COMMENT_TIMEOUT = 15
 DATA_DIR = Path(__file__).resolve().parent / "data"
-CHATS_FILE = DATA_DIR / "cai_chats.json"
-PROFILE_FILE = DATA_DIR / "cai_profile.json"
+PROFILE_FILE = DATA_DIR / "perfil.json"
 NO_MENTIONS = discord.AllowedMentions.none()
-
-# Navegador que imitamos al hablar con Character.AI (su web actual rechaza el que trae la librería).
-CAI_IMPERSONATE = os.getenv("CAI_IMPERSONATE", "firefox147").strip() or "firefox147"
-# Cookie de sesión de la web (web-next-auth). Character.AI la pide para abrir el chat.
-CAI_WEB_NEXT_AUTH = os.getenv("CAI_WEB_NEXT_AUTH", "").strip()
-if get_client is not None:
-    cai_compat.install(
-        impersonate=CAI_IMPERSONATE,
-        warmup=_env_bool("CAI_WARMUP", True),
-        web_next_auth=CAI_WEB_NEXT_AUTH,
-        quote_token=_env_bool("CAI_QUOTE_TOKEN", True),
-    )
-
-
-def _load_json(path: Path) -> dict:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-
-
-def _save_json(path: Path, data: dict) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
-def _describe(exc: BaseException) -> str:
-    """Texto del error incluyendo la causa real (la librería la esconde tras mensajes genéricos)."""
-    parts = []
-    while exc is not None and len(parts) < 4:
-        parts.append(f"{type(exc).__name__}: {exc}")
-        exc = exc.__cause__ or exc.__context__
-    return " <- ".join(parts)
 
 
 def _split(text: str, size: int = 2000) -> list[str]:
     return [text[i:i + size] for i in range(0, len(text), size)] or [text]
 
 
+def _hhmm(timestamp: Optional[float]) -> str:
+    return datetime.fromtimestamp(timestamp).strftime("%H:%M") if timestamp else "más tarde"
+
+
+def create_backend():
+    """Crea el proveedor de IA según el .env, o None si no hay ninguno configurado."""
+    provider = AI_PROVIDER or ("gemini" if GEMINI_API_KEY else "characterai" if CAI_TOKEN else "")
+    try:
+        if provider == "gemini":
+            if not GEMINI_API_KEY:
+                raise RuntimeError("falta GEMINI_API_KEY en .env")
+            from ia_gemini import GeminiBackend
+            from personaje import load_character
+
+            return GeminiBackend(GEMINI_API_KEY, load_character(), LANGUAGE, GEMINI_MODELS)
+        if provider == "characterai":
+            if not (CAI_TOKEN and CAI_CHARACTER_ID):
+                raise RuntimeError("faltan CAI_TOKEN o CAI_CHARACTER_ID en .env")
+            from ia_characterai import CharacterAIBackend
+
+            return CharacterAIBackend(CAI_TOKEN, CAI_CHARACTER_ID)
+        if provider not in ("", "none", "ninguno"):
+            raise RuntimeError(f"AI_PROVIDER desconocido: {provider}")
+    except ImportError as exc:
+        log.error("Falta una librería para la IA (%s). Ejecuta windows\\instalar.bat", exc)
+    except Exception as exc:
+        log.error("No se pudo preparar la IA: %s", exc)
+    log.warning("Personaje desactivado: el bot usará textos fijos.")
+    return None
+
+
 class Persona(commands.Cog, name="Personaje"):
-    """Charla con el personaje de Character.AI."""
+    """Charla con el personaje."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.enabled = bool(CAI_TOKEN and CAI_CHARACTER_ID and get_client)
-        self.client = None
-        self.character = None
-        self.chats: dict[str, str] = _load_json(CHATS_FILE)
-        self._lock = asyncio.Lock()
-        self._broken = False
+        self.backend = create_backend()
         self._started = False
-        if not self.enabled:
-            reason = "falta la librería PyCharacterAI" if get_client is None else "faltan CAI_TOKEN o CAI_CHARACTER_ID en .env"
-            log.warning("Personaje desactivado (%s). Se usarán textos fijos.", reason)
+        self._sleep_notice: dict[int, float] = {}  # canal -> hasta cuándo ya avisamos que no hay cupo
+
+    @property
+    def enabled(self) -> bool:
+        return self.backend is not None
+
+    def available(self) -> bool:
+        return self.backend is not None and self.backend.available()
 
     @property
     def name(self) -> str:
-        if self.character and self.character.name:
-            return self.character.name
+        if self.backend is not None:
+            return self.backend.name
         return self.bot.user.name if self.bot.user else "Bot"
 
     async def cog_unload(self) -> None:
-        await self._close_client()
+        if self.backend:
+            await self.backend.close()
 
-    # ---------- Conexión con Character.AI ----------
-
-    async def _close_client(self) -> None:
-        client, self.client = self.client, None
-        if client:
-            try:
-                await client.close_session()
-            except Exception:
-                pass
-
-    async def _ensure_client(self) -> None:
-        if self._broken:
-            await self._close_client()
-            self._broken = False
-        if self.client is None:
-            self.client = await get_client(
-                token=CAI_TOKEN, impersonate=CAI_IMPERSONATE, web_next_auth=CAI_WEB_NEXT_AUTH
-            )
-            if self.character is None:
-                self.character = await self.client.character.fetch_character_info(CAI_CHARACTER_ID)
-                log.info("Personaje cargado: %s", self.character.name)
-
-    async def _chat_for(self, key: str) -> str:
-        chat_id = self.chats.get(key)
-        if chat_id is None:
-            chat, _ = await self.client.chat.create_chat(CAI_CHARACTER_ID, greeting=False)
-            chat_id = chat.chat_id
-            self.chats[key] = chat_id
-            _save_json(CHATS_FILE, self.chats)
-        return chat_id
-
-    async def _send(self, key: str, text: str) -> Optional[str]:
-        for attempt in (1, 2):
-            try:
-                await self._ensure_client()
-                chat_id = await self._chat_for(key)
-                turn = await self.client.chat.send_message(CAI_CHARACTER_ID, chat_id, text)
-                candidate = turn.get_primary_candidate()
-                if candidate is None or candidate.is_filtered or not candidate.text.strip():
-                    return None
-                return candidate.text.strip()
-            except Exception as exc:
-                log.warning("Error con Character.AI (intento %d): %s", attempt, _describe(exc))
-                self._broken = True
-                if attempt == 2 and isinstance(exc, ActionError):
-                    # El chat pudo haberse borrado en Character.AI: la próxima vez se crea otro.
-                    self.chats.pop(key, None)
-                    _save_json(CHATS_FILE, self.chats)
-        return None
+    # ---------- Hablar con la IA ----------
 
     async def ask(self, key: str, text: str, timeout: float = REPLY_TIMEOUT) -> Optional[str]:
-        """Manda un mensaje al personaje (una conversación por canal de Discord)."""
-        if not self.enabled:
+        """Manda un mensaje al personaje (una conversación por canal). None si no hay respuesta."""
+        if not self.available():
             return None
-        holding = False
         try:
             async with asyncio.timeout(timeout):
-                async with self._lock:
-                    holding = True
-                    return await self._send(key, text)
+                return await self.backend.ask(key, text)
         except TimeoutError:
-            log.warning("Character.AI tardó más de %ss en responder", timeout)
-            if holding:
-                self._broken = True  # la conexión quedó a medias, se rehace en el próximo mensaje
-            return None
+            log.warning("%s tardó más de %ss en responder", self.backend.provider, timeout)
+        except Exception:
+            log.exception("Error inesperado con %s", self.backend.provider)
+        return None
 
     async def comment(self, channel: discord.abc.Messageable, situation: str) -> Optional[str]:
         """Pide al personaje un comentario corto sobre algo que pasó (canción, error, etc.)."""
-        if not (self.enabled and CAI_MUSIC_COMMENTS):
+        if not (MUSIC_COMMENTS and self.available()):
             return None
-        prompt = (
-            f"(({situation} Reacciona en personaje, en {CAI_LANGUAGE}, "
-            f"con una o dos frases cortas.))"
-        )
+        prompt = f"(({situation} Reacciona en personaje, en {LANGUAGE}, con una o dos frases cortas.))"
         return await self.ask(str(channel.id), prompt, COMMENT_TIMEOUT)
 
-    # ---------- Perfil (nombre y avatar del personaje) ----------
+    # ---------- Arranque y perfil (nombre y avatar) ----------
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        if self._started or self.backend is None:
+            return
+        self._started = True
+        try:
+            async with asyncio.timeout(60):
+                await self.backend.start()
+        except Exception as exc:
+            log.error("No se pudo iniciar %s: %s", self.backend.provider, exc)
+            if "API key" in str(exc):
+                self.backend = None  # clave inválida: no tiene sentido seguir intentando
+            return
+        log.info("Personaje listo: %s (con %s)", self.backend.name, self.backend.provider)
+        await self._apply_profile()
 
     async def _apply_profile(self) -> None:
-        if not (CAI_USE_PROFILE and self.character):
+        if not (USE_PROFILE and self.backend):
             return
         for guild in self.bot.guilds:
             await self._apply_nick(guild)
-
-        avatar = getattr(self.character, "avatar", None)
-        if not avatar or not avatar.get_file_name():
-            return
-        url = avatar.get_url().replace("webp=true", "webp=false")
-        saved = _load_json(PROFILE_FILE)
-        if saved.get("avatar_url") == url:
-            return
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
-                    resp.raise_for_status()
-                    image = await resp.read()
+            image = await self.backend.avatar()
+            if not image:
+                return
+            digest = hashlib.sha1(image).hexdigest()
+            try:
+                saved = json.loads(PROFILE_FILE.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                saved = {}
+            if saved.get("sha1") == digest:
+                return
             await self.bot.user.edit(avatar=image)
-            _save_json(PROFILE_FILE, {"avatar_url": url, "sha1": hashlib.sha1(image).hexdigest()})
+            DATA_DIR.mkdir(exist_ok=True)
+            PROFILE_FILE.write_text(json.dumps({"sha1": digest}), encoding="utf-8")
             log.info("Avatar del bot cambiado al del personaje")
         except Exception as exc:
             log.warning("No se pudo poner el avatar del personaje: %s", exc)
@@ -229,47 +193,30 @@ class Persona(commands.Cog, name="Personaje"):
                 pass
 
     @commands.Cog.listener()
-    async def on_ready(self) -> None:
-        if self._started or not self.enabled:
-            return
-        self._started = True
-        try:
-            async with asyncio.timeout(60):
-                async with self._lock:
-                    await self._ensure_client()
-        except Exception as exc:
-            self._broken = True
-            log.error("No se pudo conectar con Character.AI (¿token o ID del personaje incorrectos?): %s", _describe(exc))
-            return
-        await self._apply_profile()
-
-    @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild) -> None:
-        if CAI_USE_PROFILE and self.character:
+        if USE_PROFILE and self.backend:
             await self._apply_nick(guild)
 
     # ---------- Conversación ----------
 
-    def _extract_text(self, message: discord.Message, ctx: commands.Context) -> Optional[str]:
-        """Devuelve el texto para el personaje, o None si el mensaje no va dirigido al bot."""
+    def _extract_text(self, message: discord.Message, ctx: commands.Context) -> tuple[Optional[str], bool]:
+        """(texto para el personaje, si le hablaron directamente). Texto None = no va con el bot."""
         me = self.bot.user
         content = message.content
-        addressed = False
+        direct = False
 
         if ctx.prefix and content.startswith(ctx.prefix):
             content = content[len(ctx.prefix):]
-            addressed = True
-        if message.guild is None:
-            addressed = addressed or CAI_ALLOW_DM
+            direct = True
+        if message.guild is None and ALLOW_DM:
+            direct = True
         if me in message.mentions:
-            addressed = True
+            direct = True
         ref = message.reference
         if ref and isinstance(ref.resolved, discord.Message) and ref.resolved.author == me:
-            addressed = True
-        if message.channel.id in CAI_CHANNELS:
-            addressed = True
-        if not addressed:
-            return None
+            direct = True
+        if not direct and message.channel.id not in CHANNELS:
+            return None, False
 
         for user in message.mentions:
             replacement = "" if user == me else user.display_name
@@ -277,22 +224,50 @@ class Persona(commands.Cog, name="Personaje"):
         content = content.strip()
         if message.attachments and not content:
             content = "(te manda un archivo)"
-        return content or "(te saluda)"
+        return content or "(te saluda)", direct
+
+    async def _say_sleeping(self, message: discord.Message) -> None:
+        """Sin cupo de IA: avisa una sola vez por canal y después solo reacciona con 😴."""
+        until = self.backend.available_again_at()
+        channel_id = message.channel.id
+        try:
+            if self._sleep_notice.get(channel_id, 0) >= (until or 0) and channel_id in self._sleep_notice:
+                await message.add_reaction("😴")
+                return
+            self._sleep_notice[channel_id] = until or 0
+            await message.reply(
+                f"😴 *{self.name} se quedó dormida: se acabó el límite de la IA por hoy. "
+                f"Vuelve a hablar a partir de las {_hhmm(until)}. La música sigue funcionando.*",
+                mention_author=False,
+                allowed_mentions=NO_MENTIONS,
+            )
+        except discord.HTTPException:
+            pass
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot or not self.enabled:
+        if message.author.bot or self.backend is None:
             return
         ctx = await self.bot.get_context(message)
         if ctx.valid:
             return  # es un comando de verdad, lo maneja su propio código
-        text = self._extract_text(message, ctx)
+        text, direct = self._extract_text(message, ctx)
         if text is None:
+            return
+        if not self.backend.available():
+            if direct:
+                await self._say_sleeping(message)
             return
 
         async with message.channel.typing():
             reply = await self.ask(str(message.channel.id), f"{message.author.display_name}: {text}")
         if reply is None:
+            if not self.backend.available():
+                if direct:
+                    await self._say_sleeping(message)
+                return
+            if not direct:
+                return
             reply = "*(no me sale responder ahora mismo, prueba otra vez en un rato)*"
         chunks = _split(reply)
         try:
@@ -306,20 +281,22 @@ class Persona(commands.Cog, name="Personaje"):
 
     @commands.command(name="reset", aliases=["olvidar"], help="Borra la memoria del personaje en este canal.")
     async def reset(self, ctx: commands.Context) -> None:
-        self.chats.pop(str(ctx.channel.id), None)
-        _save_json(CHATS_FILE, self.chats)
+        if self.backend:
+            self.backend.reset(str(ctx.channel.id))
         await ctx.send("🧠 Memoria de este canal borrada: la próxima charla empieza de cero.")
 
-    @commands.command(name="personaje", help="Muestra qué personaje está usando el bot.")
+    @commands.command(name="personaje", help="Muestra qué personaje e IA está usando el bot.")
     async def personaje(self, ctx: commands.Context) -> None:
-        if not self.enabled:
-            await ctx.send("El personaje está desactivado (falta configurar CAI_TOKEN y CAI_CHARACTER_ID en .env).")
+        if self.backend is None:
+            await ctx.send("El personaje está desactivado (falta configurar la IA en .env). Revisa `logs/bot.log`.")
             return
-        if self.character is None:
-            await ctx.send("No pude conectar con Character.AI. Revisa `logs/bot.log`.")
-            return
-        embed = discord.Embed(title=self.character.name, description=(self.character.title or "")[:4000], color=0x9B59B6)
-        embed.set_footer(text=f"ID: {CAI_CHARACTER_ID}")
+        if self.backend.available():
+            status = "🟢 Despierta"
+        else:
+            status = f"😴 Sin cupo de IA hasta las {_hhmm(self.backend.available_again_at())}"
+        embed = discord.Embed(title=self.backend.name, description=self.backend.description[:4000], color=0x9B59B6)
+        embed.add_field(name="IA", value=self.backend.provider)
+        embed.add_field(name="Estado", value=status)
         await ctx.send(embed=embed)
 
 
@@ -329,8 +306,9 @@ _background: set[asyncio.Task] = set()
 
 
 def _persona(bot: commands.Bot) -> Optional[Persona]:
+    """El personaje, solo si ahora mismo puede hablar (así no hacemos esperar a nadie)."""
     cog = bot.get_cog("Personaje")
-    return cog if isinstance(cog, Persona) and cog.enabled else None
+    return cog if isinstance(cog, Persona) and cog.available() else None
 
 
 async def say(
@@ -343,7 +321,7 @@ async def say(
     """Envía `info` (texto fijo) acompañado del comentario del personaje sobre `situation`."""
     persona = _persona(bot)
     line = None
-    if persona:
+    if persona and MUSIC_COMMENTS:
         async with channel.typing():
             line = await persona.comment(channel, situation)
     content = f"{line}\n-# {info}" if line and info else (line or info or None)
@@ -356,7 +334,7 @@ async def say(
 def comment_later(bot: commands.Bot, channel: discord.abc.Messageable, situation: str) -> None:
     """Comentario opcional en segundo plano (para comandos que ya respondieron con una reacción)."""
     persona = _persona(bot)
-    if not (persona and CAI_MUSIC_COMMENTS):
+    if not (persona and MUSIC_COMMENTS):
         return
 
     async def run() -> None:
