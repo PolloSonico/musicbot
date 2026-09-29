@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -103,6 +104,7 @@ class Persona(commands.Cog, name="Personaje"):
         self.backend = create_backend()
         self._started = False
         self._sleep_notice: dict[int, float] = {}  # canal -> hasta cuándo ya avisamos que no hay cupo
+        self._events: dict[int, deque[str]] = {}  # canal -> últimos avisos de la música
 
     @property
     def enabled(self) -> bool:
@@ -121,15 +123,39 @@ class Persona(commands.Cog, name="Personaje"):
         if self.backend:
             await self.backend.close()
 
+    # ---------- Contexto: qué está pasando con la música ----------
+
+    def note(self, channel: discord.abc.Messageable, situation: str) -> None:
+        """Guarda un aviso de la música (aunque la IA no lo comente) para que después lo sepa."""
+        events = self._events.setdefault(channel.id, deque(maxlen=6))
+        events.append(f"[{datetime.now():%H:%M}] {situation}")
+
+    def _context(self, channel: discord.abc.Messageable) -> str:
+        parts = [f"Hora actual: {datetime.now():%H:%M}."]
+        guild = getattr(channel, "guild", None)
+        music = self.bot.get_cog("Música")
+        if guild is not None and music is not None and hasattr(music, "status_text"):
+            parts.append(f"Música en el servidor: {music.status_text(guild.id)}")
+        events = self._events.get(channel.id)
+        if events:
+            parts.append("Últimos avisos de la música en este canal:\n" + "\n".join(events))
+        return "\n".join(parts)
+
     # ---------- Hablar con la IA ----------
 
-    async def ask(self, key: str, text: str, timeout: float = REPLY_TIMEOUT) -> Optional[str]:
+    async def ask(
+        self,
+        channel: discord.abc.Messageable,
+        text: str,
+        timeout: float = REPLY_TIMEOUT,
+        wait: bool = True,
+    ) -> Optional[str]:
         """Manda un mensaje al personaje (una conversación por canal). None si no hay respuesta."""
         if not self.available():
             return None
         try:
             async with asyncio.timeout(timeout):
-                return await self.backend.ask(key, text)
+                return await self.backend.ask(str(channel.id), text, self._context(channel), wait)
         except TimeoutError:
             log.warning("%s tardó más de %ss en responder", self.backend.provider, timeout)
         except Exception:
@@ -141,7 +167,7 @@ class Persona(commands.Cog, name="Personaje"):
         if not (MUSIC_COMMENTS and self.available()):
             return None
         prompt = f"(({situation} Reacciona en personaje, en {LANGUAGE}, con una o dos frases cortas.))"
-        return await self.ask(str(channel.id), prompt, COMMENT_TIMEOUT)
+        return await self.ask(channel, prompt, COMMENT_TIMEOUT, wait=False)
 
     # ---------- Arranque y perfil (nombre y avatar) ----------
 
@@ -260,7 +286,7 @@ class Persona(commands.Cog, name="Personaje"):
             return
 
         async with message.channel.typing():
-            reply = await self.ask(str(message.channel.id), f"{message.author.display_name}: {text}")
+            reply = await self.ask(message.channel, f"{message.author.display_name}: {text}")
         if reply is None:
             if not self.backend.available():
                 if direct:
@@ -305,6 +331,15 @@ class Persona(commands.Cog, name="Personaje"):
 _background: set[asyncio.Task] = set()
 
 
+def _note(bot: commands.Bot, channel: discord.abc.Messageable, situation: str) -> None:
+    cog = bot.get_cog("Personaje")
+    if isinstance(cog, Persona):
+        try:
+            cog.note(channel, situation)
+        except Exception:
+            log.exception("No se pudo guardar el aviso para el personaje")  # nunca debe frenar la música
+
+
 def _persona(bot: commands.Bot) -> Optional[Persona]:
     """El personaje, solo si ahora mismo puede hablar (así no hacemos esperar a nadie)."""
     cog = bot.get_cog("Personaje")
@@ -319,6 +354,7 @@ async def say(
     **kwargs,
 ) -> None:
     """Envía `info` (texto fijo) acompañado del comentario del personaje sobre `situation`."""
+    _note(bot, channel, situation)
     persona = _persona(bot)
     line = None
     if persona and MUSIC_COMMENTS:
@@ -333,6 +369,7 @@ async def say(
 
 def comment_later(bot: commands.Bot, channel: discord.abc.Messageable, situation: str) -> None:
     """Comentario opcional en segundo plano (para comandos que ya respondieron con una reacción)."""
+    _note(bot, channel, situation)
     persona = _persona(bot)
     if not (persona and MUSIC_COMMENTS):
         return
