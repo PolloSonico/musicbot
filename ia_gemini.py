@@ -23,6 +23,7 @@ from google.genai import errors, types
 from personaje import Character
 
 log = logging.getLogger("persona")
+logging.getLogger("google_genai").setLevel(logging.WARNING)  # evita mensajes internos de la librería
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 HISTORY_FILE = DATA_DIR / "historial.json"
@@ -78,8 +79,12 @@ def build_system_prompt(character: Character, language: str) -> str:
         "ni digas que eres una IA o un modelo de lenguaje.\n"
         "- Los mensajes de la gente llegan como \"Nombre: mensaje\". Varias personas pueden "
         "hablar en el mismo canal; dirígete a ellas por su nombre cuando venga bien.\n"
-        "- Los textos entre dobles paréntesis ((así)) son avisos de lo que pasa con la música "
-        "del bot (qué canción suena, quién la pidió, errores...). Reacciona a ellos en personaje.\n"
+        "- Los textos entre dobles paréntesis ((así)) son avisos automáticos del sistema sobre la "
+        "música (qué canción suena, quién la pidió, errores...). Reacciona a ellos en personaje. "
+        "Tú NUNCA escribas texto entre dobles paréntesis ni inventes avisos.\n"
+        "- Si te preguntan qué canción suena, qué hay en la cola o qué pasó con la música, usa SOLO "
+        "la sección \"Lo que está pasando ahora\". Puedes contar lo que sepas de la canción real "
+        "(artista, de qué trata la letra), pero si no la conoces, no inventes: dilo con tu estilo.\n"
         f"- Responde siempre en {language}, con mensajes cortos (1 a 4 frases) salvo que te pidan "
         "algo largo. No empieces tus mensajes con tu nombre.\n"
         "- Puedes usar *acciones entre asteriscos* y algún emoji, sin abusar."
@@ -154,15 +159,20 @@ class GeminiBackend:
         self.cooldowns = {m: t for m, t in self.cooldowns.items() if t > now}
         _save(STATE_FILE, {"cooldowns": self.cooldowns, "thinking": self.thinking})
 
-    async def ask(self, key: str, text: str) -> Optional[str]:
+    async def ask(self, key: str, text: str, context: str = "", wait: bool = True) -> Optional[str]:
         lock = self._locks.setdefault(key, asyncio.Lock())
+        if not wait and lock.locked():
+            return None  # el canal está ocupado con otra respuesta: no hacemos esperar a la música
         async with lock:  # un mensaje a la vez por canal, para no mezclar la conversación
             history = self.history.get(key, [])
             contents = history + [{"role": "user", "parts": [{"text": text}]}]
+            system = self.system_prompt
+            if context:
+                system += f"\n\n## Lo que está pasando ahora (información real)\n{context}"
             for model in self.models:
                 if self.cooldowns.get(model, 0) > time.time():
                     continue
-                reply = await self._generate(model, contents)
+                reply = await self._generate(model, contents, system)
                 if reply is None:
                     continue
                 history = contents + [{"role": "model", "parts": [{"text": reply}]}]
@@ -171,14 +181,15 @@ class GeminiBackend:
                 return reply
             return None
 
-    async def _generate(self, model: str, contents: list[dict]) -> Optional[str]:
+    async def _generate(self, model: str, contents: list[dict], system: str) -> Optional[str]:
         start = self.thinking.get(model, 0)
         for index in range(start, len(THINKING_OPTIONS)):
             config = types.GenerateContentConfig(
-                system_instruction=self.system_prompt,
+                system_instruction=system,
                 temperature=0.9,
                 max_output_tokens=1024,
                 thinking_config=THINKING_OPTIONS[index],
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             )
             try:
                 response = await self.client.aio.models.generate_content(
@@ -197,6 +208,10 @@ class GeminiBackend:
                 elif exc.code in (401, 403):
                     self.cooldowns[model] = time.time() + 3600
                     log.error("Gemini: la API key no tiene acceso (%s)", exc.message)
+                elif exc.code in (500, 502, 503, 504):
+                    # Modelo saturado ("high demand"): lo dejamos descansar un par de minutos.
+                    self.cooldowns[model] = time.time() + 120
+                    log.warning("Gemini: %s está saturado (%s), se prueba otro modelo", model, exc.code)
                 else:
                     self.cooldowns[model] = time.time() + 30
                     log.warning("Gemini: error con %s: %s", model, exc)

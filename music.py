@@ -284,6 +284,32 @@ class Music(commands.Cog, name="Música"):
         if guild.voice_client:
             await guild.voice_client.disconnect(force=True)
 
+    def status_text(self, guild_id: int) -> str:
+        """Resumen de la música para que el personaje sepa qué está sonando."""
+        player = self.players.get(guild_id)
+        if player is None or (player.current is None and not player.queue):
+            return "No está sonando nada ahora mismo y la cola está vacía."
+        parts = []
+        track = player.current
+        if track:
+            extra = ""
+            if player.voice and player.voice.is_paused():
+                extra += " (en pausa)"
+            if player.loop_mode:
+                extra += " (en repetición)"
+            parts.append(
+                f"Sonando ahora: '{track.title}' ({track.url}), pedida por {track.requester}, "
+                f"va por {fmt_duration(player.elapsed())} de {fmt_duration(track.duration)}{extra}."
+            )
+        queue = list(player.queue)
+        if queue:
+            names = ", ".join(f"'{t.title}' (pedida por {t.requester})" for t in queue[:5])
+            more = f" y {len(queue) - 5} más" if len(queue) > 5 else ""
+            parts.append(f"En cola: {names}{more}.")
+        else:
+            parts.append("No hay más canciones en cola.")
+        return " ".join(parts)
+
     def get_player(self, ctx: commands.Context) -> GuildPlayer:
         player = self.players.get(ctx.guild.id)
         if player is None:
@@ -305,15 +331,19 @@ class Music(commands.Cog, name="Música"):
             raise commands.CheckFailure("Tienes que estar en un canal de voz.")
         vc = ctx.voice_client
         if vc is None:
-            try:
-                return await user_voice.channel.connect(self_deaf=True, timeout=20)
-            except (asyncio.TimeoutError, discord.ClientException) as exc:
-                log.warning("No se pudo conectar a voz en %s: %s", ctx.guild.name, exc)
-                if ctx.voice_client:
-                    await ctx.voice_client.disconnect(force=True)
-                raise commands.CheckFailure(
-                    "No pude conectarme al canal de voz. Prueba otra vez en unos segundos."
-                ) from exc
+            # A veces Discord tarda en abrir la voz: se reintenta una vez antes de rendirse.
+            for attempt in (1, 2):
+                try:
+                    return await user_voice.channel.connect(self_deaf=True, timeout=30)
+                except (asyncio.TimeoutError, discord.ClientException) as exc:
+                    log.warning("No se pudo conectar a voz en %s (intento %d): %r", ctx.guild.name, attempt, exc)
+                    if ctx.voice_client:
+                        await ctx.voice_client.disconnect(force=True)
+                    if attempt == 2:
+                        raise commands.CheckFailure(
+                            "No pude conectarme al canal de voz. Prueba otra vez en unos segundos."
+                        ) from exc
+                    await asyncio.sleep(2)
         if vc.channel != user_voice.channel:
             if vc.is_playing() or vc.is_paused():
                 raise commands.CheckFailure(f"Ya estoy reproduciendo en **{vc.channel.name}**.")

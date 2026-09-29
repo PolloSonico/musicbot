@@ -107,5 +107,38 @@ def load_character() -> Character:
 
     if os.getenv("PERSONA_NAME", "").strip():
         character.name = os.getenv("PERSONA_NAME").strip()
+
+    examples = _load_examples(path)
+    if examples:
+        character.prompt += (
+            f"\n\n## Frases reales de {character.name} (tu voz)\n"
+            "Así hablas de verdad. Imita este estilo, vocabulario y forma de pensar. Puedes citar "
+            "alguna cuando encaje, pero sobre todo inventa frases nuevas con este mismo tono.\n\n"
+            f"{examples}"
+        )
     log.info("Personaje cargado desde %s: %s", path.name, character.name)
     return character
+
+
+MAX_EXAMPLES_CHARS = 60_000  # ~15.000 tokens: más que eso hace cada respuesta lenta y gasta cupo
+
+
+def _load_examples(character_path: Path) -> str:
+    """Frases de ejemplo: PERSONA_EXAMPLES, o personajes/<nombre>_frases.txt si existe."""
+    configured = os.getenv("PERSONA_EXAMPLES", "").strip()
+    path = BASE_DIR / configured if configured else character_path.with_name(f"{character_path.stem}_frases.txt")
+    if not path.is_file():
+        if configured:
+            log.warning("No existe el archivo de frases %s", path)
+        return ""
+    # Las líneas que empiezan con # son notas para ti y no se mandan a la IA.
+    lines = path.read_text(encoding="utf-8").splitlines()
+    text = "\n".join(line for line in lines if not line.lstrip().startswith("#")).strip()
+    if len(text) > MAX_EXAMPLES_CHARS:
+        log.warning(
+            "%s es muy largo (%d caracteres): se usan solo los primeros %d para no gastar tanto cupo",
+            path.name, len(text), MAX_EXAMPLES_CHARS,
+        )
+        text = text[:MAX_EXAMPLES_CHARS]
+    log.info("Frases de ejemplo cargadas desde %s (%d caracteres)", path.name, len(text))
+    return text

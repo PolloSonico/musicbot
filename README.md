@@ -116,6 +116,9 @@ El bot puede hablar como un personaje, por defecto **Lillia** de League of Legen
 ### Cambiar o editar el personaje
 - La personalidad de Lillia está en **`personajes/lillia.txt`**: edítalo con el Bloc de notas
   (cómo habla, su historia, sus manías...) y reinicia el bot.
+- **Frases reales:** en **`personajes/lillia_frases.txt`** puedes pegar frases del juego (de la wiki,
+  página *Lillia/LoL/Audio*), una por línea. La IA las usa como ejemplo de cómo habla. Unas 100-300
+  frases está bien: más que eso hace las respuestas más lentas y gasta más cupo.
 - También puedes usar una **character card** de [chub.ai](https://chub.ai): descarga el personaje
   como PNG, ponlo en la carpeta `personajes` y en `.env` pon `PERSONA_FILE=personajes/archivo.png`.
 
