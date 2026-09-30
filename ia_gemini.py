@@ -30,6 +30,7 @@ HISTORY_FILE = DATA_DIR / "historial.json"
 STATE_FILE = DATA_DIR / "gemini_estado.json"
 MAX_TURNS = 24  # mensajes que recuerda por canal (12 idas y vueltas)
 MODEL_TIMEOUT = 20  # segundos máximos por modelo en una charla
+SEARCH_MODEL_TIMEOUT = 40  # con búsqueda en Google (datos de League) tarda más
 FAST_MODEL_TIMEOUT = 6  # segundos máximos por modelo en un comentario de la música
 FALLBACK_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"]
 # El cupo diario gratis de Gemini se renueva a medianoche, hora del Pacífico.
@@ -99,6 +100,30 @@ def strip_actions(text: str) -> str:
     return cleaned
 
 
+SOURCES_MARK = "\n-# Fuentes:"
+
+
+def _format_sources(response) -> str:
+    """Línea pequeña con las páginas que consultó el modelo al buscar en Google."""
+    try:
+        chunks = response.candidates[0].grounding_metadata.grounding_chunks or []
+    except (AttributeError, IndexError, TypeError):
+        return ""
+    links, seen = [], set()
+    for chunk in chunks:
+        web = getattr(chunk, "web", None)
+        if not web or not web.uri:
+            continue
+        title = (web.title or web.uri).strip()
+        if title in seen:
+            continue
+        seen.add(title)
+        links.append(f"[{title}](<{web.uri}>)")  # <...> evita que Discord muestre la vista previa
+        if len(links) == 4:
+            break
+    return f"{SOURCES_MARK} {' · '.join(links)}" if links else ""
+
+
 MUSIC_CONTROL_PROMPT = """
 ## Controlar la música con órdenes
 Eres la DJ: cuando alguien te pide algo de la música con palabras normales, además de responder
@@ -111,6 +136,8 @@ una en su propia línea y escritas exactamente así:
 [[LOOP]]  -> activar o quitar la repetición de la canción actual
 [[VOLUME: 0-100]]  -> cambiar el volumen
 [[LEAVE]]  -> salir del canal de voz
+[[BUSCAR: búsqueda]]  -> mostrar 5 resultados para que la persona elija
+[[RADIO: on|off]]  -> modo radio
 Reglas:
 - Usa órdenes SOLO si te piden claramente hacer algo con la música. Si solo charlan o preguntan
   qué suena, no pongas ninguna.
@@ -119,6 +146,11 @@ Reglas:
 - Si alguien te pide "algo que me pueda gustar" o pregunta qué música le gusta, fíjate en sus
   "Canciones que pidió" (en "Lo que está pasando ahora"): describe sus gustos o elige una canción
   REAL parecida (mismo estilo, artista o época) que no esté ya en su lista.
+- Si el pedido es ambiguo (no queda claro qué canción o qué versión quieren) o te piden que
+  busques, usa [[BUSCAR: búsqueda]] en vez de PLAY: el sistema muestra 5 resultados de YouTube
+  para que la persona elija.
+- [[RADIO: on]] / [[RADIO: off]] activa o apaga el modo radio (cuando se vacía la cola, eliges tú
+  canciones parecidas a los gustos de los que están escuchando).
 - Si te piden que elijas tú una canción, elige una canción REAL que de verdad te guste a ti
   (según tu personalidad y tus gustos) y cuenta en una frase por qué la elegiste. Varía: no
   elijas siempre la misma.
@@ -172,6 +204,7 @@ class GeminiBackend:
         self.thinking: dict[str, int] = state.get("thinking", {})
         self.stats: dict[str, dict] = state.get("stats", {})
         self._locks: dict[str, asyncio.Lock] = {}
+        self.no_search: set[str] = set()  # modelos que no aceptan la búsqueda en Google
 
     @property
     def name(self) -> str:
@@ -263,12 +296,24 @@ class GeminiBackend:
         return result
 
     async def ask(
-        self, key: str, text: str, context: str = "", wait: bool = True, fast: bool = False
+        self,
+        key: str,
+        text: str,
+        context: str = "",
+        wait: bool = True,
+        fast: bool = False,
+        remember: Optional[bool] = None,
+        search: bool = False,
     ) -> Optional[str]:
         """fast=True (comentarios de la música): primero los modelos Lite, que responden antes,
-        y menos tiempo por modelo; así un modelo lento o saturado no retrasa los avisos."""
+        y menos tiempo por modelo; así un modelo lento o saturado no retrasa los avisos.
+        remember=False: no se guarda en la memoria del canal (por defecto, los comentarios
+        automáticos no se guardan, para no desplazar lo que la gente le dijo).
+        search=True: el modelo puede buscar en Google (para datos actuales, como builds de League)."""
+        if remember is None:
+            remember = not fast
         models = self.ordered_models(fast)
-        per_model = FAST_MODEL_TIMEOUT if fast else MODEL_TIMEOUT
+        per_model = FAST_MODEL_TIMEOUT if fast else SEARCH_MODEL_TIMEOUT if search else MODEL_TIMEOUT
         lock = self._locks.setdefault(key, asyncio.Lock())
         if not wait and lock.locked():
             return None  # el canal está ocupado con otra respuesta: no hacemos esperar a la música
@@ -283,7 +328,7 @@ class GeminiBackend:
                     continue
                 started = time.monotonic()
                 try:
-                    reply = await asyncio.wait_for(self._generate(model, contents, system), per_model)
+                    reply = await asyncio.wait_for(self._generate(model, contents, system, search), per_model)
                 except asyncio.TimeoutError:
                     self.cooldowns[model] = time.time() + 60
                     self._record(model, ok=False)
@@ -293,22 +338,26 @@ class GeminiBackend:
                     continue
                 elapsed = time.monotonic() - started
                 self._record(model, ok=True, seconds=elapsed)
-                log.info("Gemini: %s respondió en %.1fs", model, elapsed)
-                history = contents + [{"role": "model", "parts": [{"text": reply}]}]
-                self.history[key] = history[-MAX_TURNS:]
-                await asyncio.to_thread(_save, HISTORY_FILE, dict(self.history))
+                log.info("Gemini: %s respondió en %.1fs%s", model, elapsed, " (con búsqueda)" if search else "")
+                if remember:
+                    remembered = reply.split(SOURCES_MARK)[0].rstrip()  # las fuentes no hace falta recordarlas
+                    history = contents + [{"role": "model", "parts": [{"text": remembered}]}]
+                    self.history[key] = history[-MAX_TURNS:]
+                    await asyncio.to_thread(_save, HISTORY_FILE, dict(self.history))
                 return reply
             return None
 
-    async def _generate(self, model: str, contents: list[dict], system: str) -> Optional[str]:
+    async def _generate(self, model: str, contents: list[dict], system: str, search: bool = False) -> Optional[str]:
         start = self.thinking.get(model, 0)
+        use_search = search and model not in self.no_search
         for index in range(start, len(THINKING_OPTIONS)):
             config = types.GenerateContentConfig(
                 system_instruction=system,
                 temperature=0.9,
-                max_output_tokens=1024,
+                max_output_tokens=1536 if use_search else 1024,
                 thinking_config=THINKING_OPTIONS[index],
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                tools=[types.Tool(google_search=types.GoogleSearch())] if use_search else None,
             )
             try:
                 response = await self.client.aio.models.generate_content(
@@ -317,6 +366,11 @@ class GeminiBackend:
             except errors.APIError as exc:
                 if exc.code == 400 and "think" in str(exc).lower() and index + 1 < len(THINKING_OPTIONS):
                     continue  # este modelo no acepta esa config de pensamiento: probamos la siguiente
+                if use_search and exc.code in (400, 403) and re.search(r"search|tool|ground", str(exc), re.I):
+                    # Este modelo (o el plan gratis) no permite buscar en Google: se responde sin buscar.
+                    log.warning("Gemini: %s no permite búsqueda en Google (%s)", model, exc.message)
+                    self.no_search.add(model)
+                    return await self._generate(model, contents, system, search=False)
                 if exc.code == 429:
                     self.cooldowns[model] = _cooldown_for(exc)
                     until = datetime.fromtimestamp(self.cooldowns[model]).strftime("%d/%m %H:%M")
@@ -351,7 +405,10 @@ class GeminiBackend:
             reply = strip_actions(reply) if reply else reply
             if not reply:
                 log.info("Gemini no devolvió texto (¿filtro de seguridad?) con %s", model)
-            return reply or None
+                return None
+            if use_search:
+                reply += _format_sources(response)
+            return reply
         return None
 
     async def close(self) -> None:

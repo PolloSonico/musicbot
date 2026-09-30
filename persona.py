@@ -5,10 +5,11 @@
   de PERSONA_CHANNELS (ahí responde a todo).
 - El resto del bot usa say() / comment_later() para que los avisos (canción en cola,
   desconexión, errores...) los diga el personaje en vez de textos fijos.
-- La IA NUNCA bloquea la música: si no está configurada, no responde a tiempo o se acabó el
-  cupo diario, se usan al instante los textos fijos de siempre.
+- La IA NUNCA bloquea la música: los avisos se mandan al instante con el texto fijo y la frase
+  del personaje se añade después (editando el mensaje) cuando llega. Si la IA no está configurada,
+  no responde a tiempo o se acabó el cupo diario, queda el texto fijo.
 
-Proveedores (AI_PROVIDER en .env): "gemini" (recomendado) o "characterai".
+La IA es Google Gemini (GEMINI_API_KEY en .env).
 """
 
 import asyncio
@@ -31,31 +32,27 @@ import historial_canciones
 log = logging.getLogger("persona")
 
 
-def _env(*names: str, default: str = "") -> str:
-    """Primer valor definido entre varios nombres (los CAI_* viejos siguen funcionando)."""
-    for name in names:
-        value = os.getenv(name)
-        if value is not None and value.strip():
-            return value.strip()
-    return default
+def _env(name: str, default: str = "") -> str:
+    value = os.getenv(name)
+    return value.strip() if value is not None and value.strip() else default
 
 
-def _env_bool(*names: str, default: bool) -> bool:
-    value = _env(*names).lower()
+def _env_bool(name: str, default: bool) -> bool:
+    value = _env(name).lower()
     return default if not value else value in ("1", "true", "si", "sí", "yes", "y")
 
 
-AI_PROVIDER = _env("AI_PROVIDER").lower()
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
 GEMINI_MODELS = [m.strip() for m in _env("GEMINI_MODEL").split(",") if m.strip()]
-CAI_TOKEN = _env("CAI_TOKEN")
-CAI_CHARACTER_ID = _env("CAI_CHARACTER_ID")
 
-CHANNELS = {int(x) for x in re.findall(r"\d+", _env("PERSONA_CHANNELS", "CAI_CHANNELS"))}
-LANGUAGE = _env("PERSONA_LANGUAGE", "CAI_LANGUAGE", default="español")
-MUSIC_COMMENTS = _env_bool("PERSONA_MUSIC_COMMENTS", "CAI_MUSIC_COMMENTS", default=True)
-USE_PROFILE = _env_bool("PERSONA_USE_PROFILE", "CAI_USE_PROFILE", default=True)
-ALLOW_DM = _env_bool("PERSONA_ALLOW_DM", "CAI_ALLOW_DM", default=True)
+CHANNELS = {int(x) for x in re.findall(r"\d+", _env("PERSONA_CHANNELS"))}
+LANGUAGE = _env("PERSONA_LANGUAGE", default="español")
+MUSIC_COMMENTS = _env_bool("PERSONA_MUSIC_COMMENTS", default=True)
+USE_PROFILE = _env_bool("PERSONA_USE_PROFILE", default=True)
+ALLOW_DM = _env_bool("PERSONA_ALLOW_DM", default=True)
+# true = cuando preguntan por builds / picks / runas de League, la IA busca en Google datos del
+# parche actual (u.gg, op.gg, lolalytics, leagueofgraphs...) antes de responder.
+LOL_SEARCH = _env_bool("PERSONA_LOL_SEARCH", default=True)
 # true = se le puede pedir música con palabras normales ("@Lillia poneme Tik Tok de Kesha")
 MUSIC_CONTROL = _env_bool("PERSONA_MUSIC_CONTROL", default=True)
 # Curiosidades sobre la canción que suena: probabilidad por canción y máximo por día.
@@ -63,6 +60,7 @@ TRIVIA_CHANCE = float(_env("PERSONA_TRIVIA_CHANCE", default="0.15"))
 TRIVIA_PER_DAY = int(_env("PERSONA_TRIVIA_PER_DAY", default="1"))
 
 REPLY_TIMEOUT = 45
+SEARCH_TIMEOUT = 75
 COMMENT_TIMEOUT = 15
 DATA_DIR = Path(__file__).resolve().parent / "data"
 PROFILE_FILE = DATA_DIR / "perfil.json"
@@ -71,11 +69,44 @@ NO_MENTIONS = discord.AllowedMentions.none()
 
 
 # Órdenes que el personaje puede añadir a su respuesta: [[PLAY: búsqueda]], [[SKIP]], ...
-ACTION_RE = re.compile(r"\[\[\s*(PLAY|SKIP|STOP|PAUSE|RESUME|LOOP|VOLUME|LEAVE)\s*(?::\s*([^\]\n]*?))?\s*\]\]", re.I)
+ACTION_RE = re.compile(
+    r"\[\[\s*(PLAY|BUSCAR|SKIP|STOP|PAUSE|RESUME|LOOP|VOLUME|LEAVE|RADIO)\s*(?::\s*([^\]\n]*?))?\s*\]\]", re.I
+)
 ACTION_COMMANDS = {
-    "play": "play", "skip": "skip", "stop": "stop", "pause": "pause",
-    "resume": "resume", "loop": "loop", "volume": "volume", "leave": "leave",
+    "play": "play", "buscar": "buscar", "skip": "skip", "stop": "stop", "pause": "pause",
+    "resume": "resume", "loop": "loop", "volume": "volume", "leave": "leave", "radio": "radio",
 }
+
+# Preguntas sobre League of Legends que necesitan datos actuales (builds, runas, picks...).
+LOL_RE = re.compile(
+    r"\b(builds?|runas?|runes?|objetos?|items?|itemiza\w*|counters?|counterea\w*|pick(?:s|eo|ear|eas)?|"
+    r"tier ?list|meta|parche|patch|matchups?|win ?rate|orden de (?:habilidades|skills)|skill order|"
+    r"campe[oó]n(?:es)? (?:para|contra|fuerte|roto)|qu[eé] (?:juego|pickeo|compro))\b",
+    re.I,
+)
+LOL_INSTRUCTIONS = (
+    "La persona pregunta por League of Legends y necesita datos ACTUALES. Busca en Google estadísticas "
+    "del parche actual en sitios como u.gg, op.gg, lolalytics, leagueofgraphs o mobalytics, y da "
+    "recomendaciones concretas y correctas (campeones, runas, objetos principales, orden de "
+    "habilidades o counters, según lo que pregunte), mencionando el parche. Sigue hablando como tú "
+    "(con tu personalidad y emojis), pero los datos deben ser exactos: no inventes estadísticas. "
+    "Puedes usar una lista corta si ayuda a leerlo."
+)
+
+# Estado de ánimo según la hora del día (en la hora del PC donde corre el bot).
+MOODS = [
+    (0, 6, "Es de madrugada: estás muy dormida, bostezas (🥱💤), hablas más lento y con frases más "
+           "cortas. Si te piden elegir música, sugieres algo tranquilo para dormir."),
+    (6, 12, "Es de mañana: te estás despertando, dulce y todavía un poco lenta ☀️🌸."),
+    (12, 20, "Es de día: estás despierta, activa y con ganas de jugar y charlar ✨."),
+    (20, 24, "Es de noche: estás tranquila y soñadora 🌙; empiezas a pensar en los sueños de todos "
+             "y prefieres música más suave."),
+]
+
+
+def current_mood() -> str:
+    hour = datetime.now().hour
+    return next(text for start, end, text in MOODS if start <= hour < end)
 MAX_ACTIONS = 5
 
 
@@ -104,24 +135,14 @@ def _hhmm(timestamp: Optional[float]) -> str:
 
 
 def create_backend():
-    """Crea el proveedor de IA según el .env, o None si no hay ninguno configurado."""
-    provider = AI_PROVIDER or ("gemini" if GEMINI_API_KEY else "characterai" if CAI_TOKEN else "")
+    """Crea la IA (Gemini) según el .env, o None si no está configurada."""
     try:
-        if provider == "gemini":
-            if not GEMINI_API_KEY:
-                raise RuntimeError("falta GEMINI_API_KEY en .env")
-            from ia_gemini import GeminiBackend
-            from personaje import load_character
+        if not GEMINI_API_KEY:
+            raise RuntimeError("falta GEMINI_API_KEY en .env")
+        from ia_gemini import GeminiBackend
+        from personaje import load_character
 
-            return GeminiBackend(GEMINI_API_KEY, load_character(), LANGUAGE, GEMINI_MODELS, MUSIC_CONTROL)
-        if provider == "characterai":
-            if not (CAI_TOKEN and CAI_CHARACTER_ID):
-                raise RuntimeError("faltan CAI_TOKEN o CAI_CHARACTER_ID en .env")
-            from ia_characterai import CharacterAIBackend
-
-            return CharacterAIBackend(CAI_TOKEN, CAI_CHARACTER_ID)
-        if provider not in ("", "none", "ninguno"):
-            raise RuntimeError(f"AI_PROVIDER desconocido: {provider}")
+        return GeminiBackend(GEMINI_API_KEY, load_character(), LANGUAGE, GEMINI_MODELS, MUSIC_CONTROL)
     except ImportError as exc:
         log.error("Falta una librería para la IA (%s). Ejecuta windows\\instalar.bat", exc)
     except Exception as exc:
@@ -164,8 +185,10 @@ class Persona(commands.Cog, name="Personaje"):
         events = self._events.setdefault(channel.id, deque(maxlen=6))
         events.append(f"[{datetime.now():%H:%M}] {situation}")
 
-    def _context(self, channel: discord.abc.Messageable, people: Optional[list] = None) -> str:
-        parts = [f"Hora actual: {datetime.now():%H:%M}."]
+    def _context(self, channel: discord.abc.Messageable, people: Optional[list] = None, extra: str = "") -> str:
+        parts = [f"Hora actual: {datetime.now():%H:%M}. Tu estado de ánimo: {current_mood()}"]
+        if extra:
+            parts.append(extra)
         # Gustos musicales de quien habla y de las personas que menciona.
         for person in people or []:
             try:
@@ -192,14 +215,18 @@ class Persona(commands.Cog, name="Personaje"):
         wait: bool = True,
         fast: bool = False,
         people: Optional[list] = None,
+        remember: Optional[bool] = None,
+        search: bool = False,
+        extra: str = "",
     ) -> Optional[str]:
-        """Manda un mensaje al personaje (una conversación por canal). None si no hay respuesta."""
+        """Manda un mensaje al personaje (una conversación por canal). None si no hay respuesta.
+        remember=False: no queda en la memoria de la charla (avisos automáticos, radio...)."""
         if not self.available():
             return None
         try:
             async with asyncio.timeout(timeout):
-                context = self._context(channel, people)
-                return await self.backend.ask(str(channel.id), text, context, wait, fast)
+                context = self._context(channel, people, extra)
+                return await self.backend.ask(str(channel.id), text, context, wait, fast, remember, search)
         except TimeoutError:
             log.warning("%s tardó más de %ss en responder", self.backend.provider, timeout)
         except Exception:
@@ -330,11 +357,19 @@ class Persona(commands.Cog, name="Personaje"):
                 await self._say_sleeping(message)
             return
 
+        search = LOL_SEARCH and bool(LOL_RE.search(text))
         async with message.channel.typing():
             people = [message.author] + [
                 user for user in message.mentions if user != self.bot.user and not user.bot
             ][:3]
-            reply = await self.ask(message.channel, f"{message.author.display_name}: {text}", people=people)
+            reply = await self.ask(
+                message.channel,
+                f"{message.author.display_name}: {text}",
+                SEARCH_TIMEOUT if search else REPLY_TIMEOUT,
+                people=people,
+                search=search,
+                extra=LOL_INSTRUCTIONS if search else "",
+            )
         if reply is None:
             if not self.backend.available():
                 if direct:
@@ -367,8 +402,10 @@ class Persona(commands.Cog, name="Personaje"):
             ctx.invoked_with = command.name
             log.info("%s pidió por chat: %s %s", message.author.display_name, name, arg)
             try:
-                if name == "play":
+                if name in ("play", "buscar"):
                     await ctx.invoke(command, busqueda=arg)
+                elif name == "radio":
+                    await ctx.invoke(command, modo=arg or None)
                 elif name == "volume":
                     number = re.search(r"\d+", arg)
                     if not number:
@@ -430,25 +467,42 @@ def _persona(bot: commands.Bot) -> Optional[Persona]:
     return cog if isinstance(cog, Persona) and cog.available() else None
 
 
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
 async def say(
     bot: commands.Bot,
     channel: discord.abc.Messageable,
     situation: str,
     info: str,
     **kwargs,
-) -> None:
-    """Envía `info` (texto fijo) acompañado del comentario del personaje sobre `situation`."""
+) -> Optional[discord.Message]:
+    """Envía `info` (texto fijo, o un embed) AL INSTANTE y, cuando llega, le añade el comentario
+    del personaje sobre `situation` editando el mensaje. Nunca espera a la IA."""
     _note(bot, channel, situation)
-    persona = _persona(bot)
-    line = None
-    if persona and MUSIC_COMMENTS:
-        async with channel.typing():
-            line = await persona.comment(channel, situation)
-    content = f"{line}\n-# {info}" if line and info else (line or info or None)
     try:
-        await channel.send(content, allowed_mentions=NO_MENTIONS, **kwargs)
+        message = await channel.send(info or None, allowed_mentions=NO_MENTIONS, **kwargs)
     except discord.HTTPException as exc:
         log.warning("No se pudo enviar el mensaje: %s", exc)
+        return None
+    persona = _persona(bot)
+    if persona and MUSIC_COMMENTS:
+
+        async def add_line() -> None:
+            line = await persona.comment(channel, situation)
+            if not line:
+                return
+            content = f"{line}\n-# {info}" if info else line
+            try:
+                await message.edit(content=content[:2000], allowed_mentions=NO_MENTIONS)
+            except discord.HTTPException:
+                pass
+
+        _spawn(add_line())
+    return message
 
 
 def comment_later(bot: commands.Bot, channel: discord.abc.Messageable, situation: str) -> None:
@@ -466,9 +520,7 @@ def comment_later(bot: commands.Bot, channel: discord.abc.Messageable, situation
             except discord.HTTPException:
                 pass
 
-    task = asyncio.create_task(run())
-    _background.add(task)
-    task.add_done_callback(_background.discard)
+    _spawn(run())
 
 
 _trivia_pending = False
@@ -516,7 +568,7 @@ def maybe_song_trivia(
                 "canción, comenta lo que te hace sentir sin inventar datos. En personaje, en "
                 f"{LANGUAGE}, dos o tres frases, con emojis.))"
             )
-            line = await persona.ask(channel, prompt, REPLY_TIMEOUT, wait=False)
+            line = await persona.ask(channel, prompt, REPLY_TIMEOUT, wait=False, remember=False)
             line = extract_actions(line)[0] if line else None
             if not line or not still_playing():
                 return
@@ -532,9 +584,7 @@ def maybe_song_trivia(
         finally:
             _trivia_pending = False
 
-    task = asyncio.create_task(run())
-    _background.add(task)
-    task.add_done_callback(_background.discard)
+    _spawn(run())
 
 
 async def setup(bot: commands.Bot) -> None:

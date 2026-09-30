@@ -1,6 +1,5 @@
 discord.py[voice]>=2.7
 yt-dlp[default,deno]
 python-dotenv>=1.0
-PyCharacterAI>=2.2.50
 google-genai>=2.0
 tzdata

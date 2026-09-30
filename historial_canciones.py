@@ -45,6 +45,12 @@ def record(user: discord.abc.User, titles: list[str]) -> None:
         log.exception("No se pudo guardar el historial de canciones")  # nunca debe frenar la música
 
 
+def titles(user: discord.abc.User) -> list[str]:
+    """Todas las canciones guardadas de una persona (de la más vieja a la más nueva)."""
+    entry = _load().get(str(user.id)) or {}
+    return [song["titulo"] for song in entry.get("canciones", [])]
+
+
 def summary(user: discord.abc.User, shown_as: Optional[str] = None) -> Optional[str]:
     """Texto corto con las canciones que pidió una persona, para el contexto de la IA."""
     entry = _load().get(str(user.id))
