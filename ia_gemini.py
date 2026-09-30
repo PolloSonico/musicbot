@@ -28,7 +28,7 @@ logging.getLogger("google_genai").setLevel(logging.WARNING)  # evita mensajes in
 DATA_DIR = Path(__file__).resolve().parent / "data"
 HISTORY_FILE = DATA_DIR / "historial.json"
 STATE_FILE = DATA_DIR / "gemini_estado.json"
-MAX_TURNS = 40  # mensajes que recuerda por canal
+MAX_TURNS = 24  # mensajes que recuerda por canal (12 idas y vueltas)
 MODEL_TIMEOUT = 20  # segundos máximos por modelo en una charla
 FAST_MODEL_TIMEOUT = 6  # segundos máximos por modelo en un comentario de la música
 FALLBACK_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"]
@@ -39,10 +39,19 @@ MODEL_RE = re.compile(r"^gemini-(\d+(?:\.\d+)?)-flash(-lite)?$")
 # Configuraciones de "pensamiento" a probar (menos pensamiento = más rápido y gasta menos cupo).
 # No todos los modelos aceptan todas; se prueba en orden y se recuerda cuál funcionó.
 THINKING_OPTIONS = [
+    types.ThinkingConfig(thinking_level="minimal"),
     types.ThinkingConfig(thinking_level="low"),
     types.ThinkingConfig(thinking_budget=0),
     None,
 ]
+
+
+# Ranking de modelos aprendido: cada modelo guarda su tiempo de respuesta medio y su tasa de
+# fallos (saturado / demasiado lento). Los fallos se "olvidan" a la mitad cada FAIL_HALF_LIFE
+# horas, para que un modelo castigado pueda volver a subir cuando Google lo descongestione.
+FAIL_HALF_LIFE = 6.0
+FAIL_PENALTY = 40.0  # segundos "virtuales" que suma un fallo seguro
+EWMA = 0.3  # cuánto pesa la última experiencia
 
 
 def _load(path: Path) -> dict:
@@ -107,6 +116,9 @@ Reglas:
   qué suena, no pongas ninguna.
 - En PLAY escribe una búsqueda precisa, idealmente "Artista - Título" (ej: [[PLAY: Kesha - TiK ToK]]).
   Si te pasan un link, pon el link tal cual. Como mucho 3 PLAY por mensaje.
+- Si alguien te pide "algo que me pueda gustar" o pregunta qué música le gusta, fíjate en sus
+  "Canciones que pidió" (en "Lo que está pasando ahora"): describe sus gustos o elige una canción
+  REAL parecida (mismo estilo, artista o época) que no esté ya en su lista.
 - Si te piden que elijas tú una canción, elige una canción REAL que de verdad te guste a ti
   (según tu personalidad y tus gustos) y cuenta en una frase por qué la elegiste. Varía: no
   elijas siempre la misma.
@@ -158,6 +170,7 @@ class GeminiBackend:
         state = _load(STATE_FILE)
         self.cooldowns: dict[str, float] = state.get("cooldowns", {})
         self.thinking: dict[str, int] = state.get("thinking", {})
+        self.stats: dict[str, dict] = state.get("stats", {})
         self._locks: dict[str, asyncio.Lock] = {}
 
     @property
@@ -211,15 +224,50 @@ class GeminiBackend:
     def _save_state(self) -> None:
         now = time.time()
         self.cooldowns = {m: t for m, t in self.cooldowns.items() if t > now}
-        _save(STATE_FILE, {"cooldowns": self.cooldowns, "thinking": self.thinking})
+        _save(STATE_FILE, {"cooldowns": self.cooldowns, "thinking": self.thinking, "stats": self.stats})
+
+    # ---------- Ranking de modelos ----------
+
+    def _fail_rate(self, stat: dict) -> float:
+        hours = (time.time() - stat.get("t", 0)) / 3600
+        return stat.get("fail", 0.0) * 0.5 ** (hours / FAIL_HALF_LIFE)
+
+    def _record(self, model: str, ok: bool, seconds: float = 0.0) -> None:
+        stat = self.stats.setdefault(model, {"lat": seconds or 5.0, "fail": 0.0, "n": 0})
+        stat["fail"] = self._fail_rate(stat) * (1 - EWMA) + (0.0 if ok else 1.0) * EWMA
+        if ok:
+            stat["lat"] = stat["lat"] * (1 - EWMA) + seconds * EWMA
+        stat["n"] = stat.get("n", 0) + 1
+        stat["t"] = time.time()
+        self._save_state()
+
+    def _score(self, model: str, position: int) -> float:
+        """Menor = mejor. Los modelos sin datos se prueban pronto (así se descubre si son buenos)."""
+        stat = self.stats.get(model)
+        if not stat:
+            return position * 0.1
+        return stat["lat"] + self._fail_rate(stat) * FAIL_PENALTY + position * 0.1
+
+    def ordered_models(self, fast: bool = False) -> list[str]:
+        ranked = sorted(self.models, key=lambda m: self._score(m, self.models.index(m)))
+        if fast:  # comentarios cortos: primero los Lite (más rápidos y menos solicitados)
+            ranked = [m for m in ranked if "lite" in m] + [m for m in ranked if "lite" not in m]
+        return ranked
+
+    def ranking(self) -> list[tuple[str, Optional[float], float]]:
+        """(modelo, segundos medios, tasa de fallos) en el orden en que se usarán."""
+        result = []
+        for model in self.ordered_models():
+            stat = self.stats.get(model)
+            result.append((model, stat["lat"] if stat else None, self._fail_rate(stat) if stat else 0.0))
+        return result
 
     async def ask(
         self, key: str, text: str, context: str = "", wait: bool = True, fast: bool = False
     ) -> Optional[str]:
         """fast=True (comentarios de la música): primero los modelos Lite, que responden antes,
         y menos tiempo por modelo; así un modelo lento o saturado no retrasa los avisos."""
-        models = [m for m in self.models if "lite" in m] + [m for m in self.models if "lite" not in m] \
-            if fast else self.models
+        models = self.ordered_models(fast)
         per_model = FAST_MODEL_TIMEOUT if fast else MODEL_TIMEOUT
         lock = self._locks.setdefault(key, asyncio.Lock())
         if not wait and lock.locked():
@@ -233,14 +281,19 @@ class GeminiBackend:
             for model in models:
                 if self.cooldowns.get(model, 0) > time.time():
                     continue
+                started = time.monotonic()
                 try:
                     reply = await asyncio.wait_for(self._generate(model, contents, system), per_model)
                 except asyncio.TimeoutError:
                     self.cooldowns[model] = time.time() + 60
+                    self._record(model, ok=False)
                     log.warning("Gemini: %s tardó más de %ss, se prueba otro modelo", model, per_model)
                     continue
                 if reply is None:
                     continue
+                elapsed = time.monotonic() - started
+                self._record(model, ok=True, seconds=elapsed)
+                log.info("Gemini: %s respondió en %.1fs", model, elapsed)
                 history = contents + [{"role": "model", "parts": [{"text": reply}]}]
                 self.history[key] = history[-MAX_TURNS:]
                 await asyncio.to_thread(_save, HISTORY_FILE, dict(self.history))
@@ -275,8 +328,9 @@ class GeminiBackend:
                     self.cooldowns[model] = time.time() + 3600
                     log.error("Gemini: la API key no tiene acceso (%s)", exc.message)
                 elif exc.code in (500, 502, 503, 504):
-                    # Modelo saturado ("high demand"): lo dejamos descansar un par de minutos.
+                    # Modelo saturado ("high demand"): lo dejamos descansar y baja en el ranking.
                     self.cooldowns[model] = time.time() + 120
+                    self._record(model, ok=False)
                     log.warning("Gemini: %s está saturado (%s), se prueba otro modelo", model, exc.code)
                 else:
                     self.cooldowns[model] = time.time() + 30
