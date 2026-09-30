@@ -58,9 +58,11 @@ class MusicBot(commands.Bot):
 
     async def on_ready(self) -> None:
         logging.info("Conectado como %s (id %s)", self.user, self.user.id)
-        await self.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.listening, name=f"{PREFIX}help")
-        )
+        # Estado del perfil: la canción que suena, o "Durmiendo 💤" si no hay música.
+        music = self.get_cog("Música")
+        if music is not None:
+            music._presence = ""  # fuerza a volver a ponerlo (tras reconectar, Discord lo olvida)
+            music.refresh_presence()
 
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
         if isinstance(error, commands.CommandNotFound):

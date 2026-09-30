@@ -79,6 +79,8 @@ Logs: `logs\bot.log` (lo que hace el bot) y `logs\launcher.log` (arranques, actu
 | Comando | Alias | Qué hace |
 |---|---|---|
 | `!play <link o búsqueda>` | `!p` | Entra a tu canal y reproduce, o añade a la cola. Acepta playlists (hasta 100 canciones) |
+| `!buscar <búsqueda>` | `!b` | Muestra los 5 primeros resultados de YouTube en un menú para que elijas (evita covers o videos equivocados) |
+| `!radio [on/off]` | | Modo radio: cuando se vacía la cola, elige canciones parecidas a lo que suelen pedir los que están en el canal |
 | `!skip` | `!s`, `!next` | Salta la canción actual |
 | `!pause` / `!resume` | `!r` | Pausa / reanuda |
 | `!stop` | | Para la música y vacía la cola |
@@ -106,6 +108,10 @@ El bot puede hablar como un personaje, por defecto **Lillia** de League of Legen
   (`!reset` la borra).
 - **Música con personalidad:** los avisos (canción en cola, qué está sonando, skip, errores,
   desconexión...) los dice el personaje. Debajo sigue apareciendo el dato en pequeño.
+- **Humor según la hora:** de madrugada está medio dormida y sugiere música tranquila; de día está más activa.
+- **Builds y picks de League:** si le preguntas por builds, runas, counters o qué pickear, busca en Google
+  los datos del parche actual (u.gg, op.gg, lolalytics, leagueofgraphs...) y responde con su personalidad,
+  con las fuentes en pequeño debajo (`PERSONA_LOL_SEARCH`).
 - **Pedirle música hablando normal:** mencionándola o respondiéndole, por ejemplo
   `@Lillia poneme Tik Tok de Kesha`, `@Lillia pon una canción que te guste a ti`,
   `@Lillia salta esta`, `@Lillia bajale el volumen`. Ella responde y ejecuta la orden
@@ -150,6 +156,11 @@ Para gastar menos cupo: `PERSONA_MUSIC_COMMENTS=false` (no comenta la música) y
 
 Comandos: `!personaje` (qué personaje e IA usa y si le queda cupo) y `!reset` / `!olvidar`
 (borra su memoria en el canal).
+
+## Otros detalles
+- El estado del bot en Discord muestra la canción que suena ("Escuchando ...") o "Durmiendo 💤".
+- El aviso "🎶 Reproduciendo" sale al instante; la frase de Lillia se añade unos segundos después.
+- El audio de la siguiente canción se prepara 30 s antes de que termine la actual, para que no haya silencio.
 
 ## Problemas comunes
 

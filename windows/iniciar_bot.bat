@@ -6,7 +6,7 @@ cd /d "%~dp0.."
 if not exist logs mkdir logs
 
 echo [%date% %time%] Actualizando yt-dlp y librerias de IA... >> logs\launcher.log
-".venv\Scripts\python.exe" -m pip install -U --quiet --disable-pip-version-check "yt-dlp[default,deno]" PyCharacterAI google-genai >> logs\launcher.log 2>&1
+".venv\Scripts\python.exe" -m pip install -U --quiet --disable-pip-version-check "yt-dlp[default,deno]" google-genai >> logs\launcher.log 2>&1
 
 :loop
 

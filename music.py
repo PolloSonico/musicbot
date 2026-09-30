@@ -2,10 +2,11 @@ import asyncio
 import logging
 import os
 import random
+import re
 import shlex
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import discord
@@ -13,7 +14,7 @@ import yt_dlp
 from discord.ext import commands
 
 import historial_canciones
-from persona import comment_later, maybe_song_trivia, say
+from persona import _persona, comment_later, extract_actions, maybe_song_trivia, say
 
 log = logging.getLogger("music")
 
@@ -22,6 +23,10 @@ IDLE_SECONDS = int(float(os.getenv("IDLE_MINUTES", "5")) * 60)
 ALONE_SECONDS = 60
 DEFAULT_VOLUME = max(0, min(100, int(os.getenv("DEFAULT_VOLUME", "50")))) / 100
 MAX_PLAYLIST = 100
+SEARCH_RESULTS = 5  # opciones que muestra !buscar
+PREFETCH_SECONDS = 30  # se pide el audio de la siguiente canción cuando faltan estos segundos
+STREAM_TTL = 45 * 60  # los links de audio de YouTube caducan en unas horas: se reusan como mucho 45 min
+RADIO_REQUESTER = "📻 Radio"
 QUEUE_PAGE_SIZE = 10
 EMBED_COLOR = 0xFF2700
 
@@ -53,6 +58,13 @@ class Track:
     url: str
     duration: Optional[int]
     requester: str
+    uploader: str = ""
+    # Link de audio ya pedido a YouTube (prefetch), y cuándo se pidió.
+    stream: Optional[dict] = field(default=None, repr=False)
+    stream_at: float = 0.0
+
+    def stream_is_fresh(self) -> bool:
+        return self.stream is not None and time.monotonic() - self.stream_at < STREAM_TTL
 
 
 def fmt_duration(seconds: Optional[float]) -> str:
@@ -73,9 +85,10 @@ def _extract(query: str, opts: dict) -> Optional[dict]:
         return ydl.extract_info(query, download=False)
 
 
-async def fetch_tracks(query: str, requester: str) -> list[Track]:
-    """Convierte un link o una búsqueda en una lista de canciones (varias si es playlist)."""
-    target = query if is_url(query) else f"ytsearch1:{query}"
+async def fetch_tracks(query: str, requester: str, limit: int = 1) -> list[Track]:
+    """Convierte un link o una búsqueda en una lista de canciones (varias si es playlist).
+    limit > 1: devuelve varios resultados de la búsqueda (para elegir con !buscar)."""
+    target = query if is_url(query) else f"ytsearch{limit}:{query}"
     info = await asyncio.to_thread(_extract, target, YDL_SEARCH_OPTS)
     if not info:
         return []
@@ -93,6 +106,7 @@ async def fetch_tracks(query: str, requester: str) -> list[Track]:
                 url=url,
                 duration=int(duration) if duration else None,
                 requester=requester,
+                uploader=entry.get("channel") or entry.get("uploader") or "",
             )
         )
     return tracks
@@ -104,6 +118,15 @@ async def resolve_stream(track: Track) -> dict:
         info = next(e for e in info["entries"] if e)
     if not info or not info.get("url"):
         raise RuntimeError("yt-dlp no devolvió un stream de audio")
+    return info
+
+
+async def get_stream(track: Track) -> dict:
+    """El audio de la canción: el que ya se pidió por adelantado si sigue fresco, o uno nuevo."""
+    if track.stream_is_fresh():
+        return track.stream
+    info = await resolve_stream(track)
+    track.stream, track.stream_at = info, time.monotonic()
     return info
 
 
@@ -123,6 +146,10 @@ class GuildPlayer:
         self._next = asyncio.Event()
         self._started_at = 0.0
         self._paused_at: Optional[float] = None
+        self.radio = False
+        self._radio_failures = 0
+        self.played: deque[str] = deque(maxlen=25)  # últimas canciones (para que la radio no repita)
+        self._prefetch_task: Optional[asyncio.Task] = None
         self.task = asyncio.create_task(self._run())
 
     @property
@@ -155,6 +182,29 @@ class GuildPlayer:
         if self.voice and (self.voice.is_playing() or self.voice.is_paused()):
             self.voice.stop()
 
+    def stop_prefetch(self) -> None:
+        if self._prefetch_task and not self._prefetch_task.done():
+            self._prefetch_task.cancel()
+        self._prefetch_task = None
+
+    async def _prefetch_loop(self, track: Track) -> None:
+        """Mientras suena `track`, pide a YouTube el audio de la siguiente cuando faltan
+        PREFETCH_SECONDS, así no hay silencio entre canciones."""
+        try:
+            while self.current is track:
+                remaining = track.duration - self.elapsed() if track.duration else None
+                upcoming = track if self.loop_mode else (self.queue[0] if self.queue else None)
+                if (remaining is None or remaining <= PREFETCH_SECONDS) and upcoming and not upcoming.stream_is_fresh():
+                    try:
+                        await get_stream(upcoming)
+                        log.info("Audio de '%s' preparado por adelantado", upcoming.title)
+                    except Exception as exc:
+                        log.info("No se pudo preparar por adelantado '%s': %s", upcoming.title, exc)
+                        await asyncio.sleep(20)  # se reintenta más tarde (o al empezar la canción)
+                await asyncio.sleep(3)
+        except asyncio.CancelledError:
+            pass
+
     def _after(self, error: Optional[Exception]) -> None:
         if error:
             log.error("Error de reproducción en %s: %s", self.guild.name, error)
@@ -166,7 +216,11 @@ class GuildPlayer:
                 repeating = self.loop_mode and self.current is not None
                 if not repeating:
                     self.current = None
+                    if not self.queue and self.radio:
+                        if await self._radio_turn():
+                            continue
                     if not self.queue:
+                        self.cog.refresh_presence()
                         self._wake.clear()
                         try:
                             await asyncio.wait_for(self._wake.wait(), IDLE_SECONDS)
@@ -185,7 +239,7 @@ class GuildPlayer:
                     break
 
                 try:
-                    info = await resolve_stream(track)
+                    info = await get_stream(track)
                 except Exception as exc:
                     log.warning("No se pudo obtener %s: %s", track.url, exc)
                     await self._say(
@@ -225,6 +279,10 @@ class GuildPlayer:
                         "⚠️ Perdí la conexión con el canal de voz. Vuelve a usar play.",
                     )
                     break
+                self.played.append(track.title)
+                self.cog.refresh_presence()
+                self.stop_prefetch()
+                self._prefetch_task = asyncio.create_task(self._prefetch_loop(track))
                 if not repeating:
                     await self._announce(track, info)
                     maybe_song_trivia(
@@ -233,10 +291,39 @@ class GuildPlayer:
                     )
                 await self._next.wait()
         except asyncio.CancelledError:
+            self.stop_prefetch()
             raise
         except Exception:
             log.exception("El reproductor de %s falló", self.guild.name)
+        self.stop_prefetch()
         await self.cog.cleanup(self.guild)
+
+    async def _radio_turn(self) -> bool:
+        """Modo radio con la cola vacía: elige y encola una canción. True = seguir con la radio
+        (encoló algo o hay que reintentar); False = nada que hacer (nadie escucha o se apagó)."""
+        vc = self.voice
+        listeners = [m for m in vc.channel.members if not m.bot] if vc and vc.channel else []
+        if not listeners:
+            return False
+        try:
+            added = await self.cog.radio_pick(self, listeners)
+        except Exception:
+            log.exception("La radio no pudo elegir canción")
+            added = False
+        if added:
+            self._radio_failures = 0
+            return True
+        self._radio_failures += 1
+        if self._radio_failures >= 3:
+            self.radio = False
+            self._radio_failures = 0
+            await self._say(
+                "No encontraste qué más poner en la radio y la apagaste.",
+                "📻 No encontré más canciones para la radio, la apagué.",
+            )
+            return False
+        await asyncio.sleep(5)
+        return True  # se vuelve a intentar en la próxima vuelta
 
     async def _say(self, situation: str, info: str, **kwargs) -> None:
         await say(self.bot, self.channel, situation, info, **kwargs)
@@ -263,6 +350,63 @@ class GuildPlayer:
         )
 
 
+NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+RADIO_ON = {"on", "si", "sí", "activar", "activa", "encender", "enciende", "prender", "prende", "1", "true"}
+RADIO_OFF = {"off", "no", "desactivar", "desactiva", "apagar", "apaga", "0", "false"}
+
+
+class SearchView(discord.ui.View):
+    """Menú desplegable con los resultados de !buscar. Solo quien buscó puede elegir."""
+
+    def __init__(self, cog: "Music", ctx: commands.Context, tracks: list[Track]) -> None:
+        super().__init__(timeout=60)
+        self.cog, self.ctx, self.tracks = cog, ctx, tracks
+        self.message: Optional[discord.Message] = None
+        options = []
+        for i, track in enumerate(tracks):
+            details = f"{track.uploader} · " if track.uploader else ""
+            options.append(discord.SelectOption(
+                label=track.title[:100],
+                description=f"{details}{fmt_duration(track.duration)}"[:100],
+                value=str(i),
+                emoji=NUMBER_EMOJIS[i],
+            ))
+        self.select = discord.ui.Select(placeholder="Elige la canción…", options=options)
+        self.select.callback = self.chosen
+        self.add_item(self.select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                f"Solo {self.ctx.author.display_name} puede elegir en esta búsqueda 🌸", ephemeral=True
+            )
+            return False
+        return True
+
+    async def chosen(self, interaction: discord.Interaction) -> None:
+        track = self.tracks[int(self.select.values[0])]
+        self.stop()
+        await interaction.response.edit_message(
+            view=None,
+            embed=discord.Embed(title="✅ Elegida", description=f"[{track.title}]({track.url})", color=EMBED_COLOR),
+        )
+        try:
+            await self.cog.enqueue(self.ctx, [track])
+        except commands.CommandError as exc:
+            await self.cog.bot.on_command_error(self.ctx, exc)
+        except Exception as exc:
+            await self.cog.bot.on_command_error(self.ctx, commands.CommandInvokeError(exc))
+
+    async def on_timeout(self) -> None:
+        if self.message:
+            try:
+                await self.message.edit(
+                    view=None, embed=discord.Embed(title="⌛ Se acabó el tiempo para elegir", color=EMBED_COLOR)
+                )
+            except discord.HTTPException:
+                pass
+
+
 class Music(commands.Cog, name="Música"):
     """Reproduce música y videos de YouTube en el canal de voz."""
 
@@ -270,6 +414,8 @@ class Music(commands.Cog, name="Música"):
         self.bot = bot
         self.players: dict[int, GuildPlayer] = {}
         self._alone_timers: dict[int, asyncio.Task] = {}
+        self._presence: Optional[str] = ""  # "" = todavía no se puso ninguno
+        self._presence_task: Optional[asyncio.Task] = None
 
     async def cog_unload(self) -> None:
         for guild_id in list(self.players):
@@ -284,13 +430,72 @@ class Music(commands.Cog, name="Música"):
 
     async def cleanup(self, guild: discord.Guild) -> None:
         player = self.players.pop(guild.id, None)
+        if player:
+            player.stop_prefetch()
+            player.current = None
         if player and player.task is not asyncio.current_task():
             player.task.cancel()
+        self.refresh_presence()
         timer = self._alone_timers.pop(guild.id, None)
         if timer and timer is not asyncio.current_task():
             timer.cancel()
         if guild.voice_client:
             await guild.voice_client.disconnect(force=True)
+
+    # ---------- Estado de Discord ("Escuchando ...") ----------
+
+    def refresh_presence(self) -> None:
+        """Muestra en el perfil del bot la canción que suena, o "Durmiendo 💤" si no hay música."""
+        playing = [p for p in self.players.values() if p.current is not None]
+        title = max(playing, key=lambda p: p._started_at).current.title if playing else None
+        if title == self._presence:
+            return
+        self._presence = title
+        if title:
+            activity = discord.Activity(type=discord.ActivityType.listening, name=title[:128])
+        else:
+            activity = discord.CustomActivity(name="Durmiendo 💤")
+
+        async def apply() -> None:
+            try:
+                await self.bot.change_presence(activity=activity)
+            except Exception as exc:
+                log.debug("No se pudo cambiar el estado: %s", exc)
+
+        if self.bot.is_ready():
+            self._presence_task = asyncio.create_task(apply())
+
+    # ---------- Radio ----------
+
+    async def radio_pick(self, player: GuildPlayer, listeners: list[discord.Member]) -> bool:
+        """Elige una canción para la radio según los gustos de quienes escuchan y la encola."""
+        recent = list(player.played)
+        query = None
+        persona = _persona(self.bot)
+        if persona:
+            prompt = (
+                "((Modo radio: se terminó la cola y te toca elegir la próxima canción para los que están "
+                "escuchando en el canal de voz. Fíjate en sus \"Canciones que pidió\" y en tu estado de "
+                "ánimo, y elige UNA canción REAL que les pueda gustar (mismo estilo, artistas parecidos "
+                "o de la misma época). No repitas ninguna de las que ya sonaron: "
+                f"{'; '.join(recent[-15:]) or 'ninguna'}. Responde SOLO con una línea: Artista - Título))"
+            )
+            reply = await persona.ask(player.channel, prompt, 30, people=listeners[:5], remember=False)
+            if reply:
+                lines = [line for line in extract_actions(reply)[0].splitlines() if line.strip()]
+                pick = next((line for line in lines if " - " in line), lines[0] if lines else "")
+                query = re.sub(r'^[\s\-•*"“«]+|[\s"”»*]+$', "", pick)[:120] or None
+        if not query:  # sin IA: una canción al azar de las que ya pidieron los que escuchan
+            pool = [t for m in listeners for t in historial_canciones.titles(m) if t not in recent]
+            query = random.choice(pool) if pool else None
+        if not query:
+            return False
+        tracks = [t for t in await fetch_tracks(query, RADIO_REQUESTER) if t.title not in recent]
+        if not tracks:
+            return False
+        player.add(tracks[:1])
+        log.info("La radio eligió '%s' (búsqueda: %s)", tracks[0].title, query)
+        return True
 
     def status_text(self, guild_id: int) -> str:
         """Resumen de la música para que el personaje sepa qué está sonando."""
@@ -309,6 +514,8 @@ class Music(commands.Cog, name="Música"):
                 f"Sonando ahora: '{track.title}' ({track.url}), pedida por {track.requester}, "
                 f"va por {fmt_duration(player.elapsed())} de {fmt_duration(track.duration)}{extra}."
             )
+        if player.radio:
+            parts.append("El modo radio está activado (cuando se vacía la cola, eliges tú la próxima canción).")
         queue = list(player.queue)
         if queue:
             names = ", ".join(f"'{t.title}' (pedida por {t.requester})" for t in queue[:5])
@@ -360,24 +567,10 @@ class Music(commands.Cog, name="Música"):
 
     # ---------- Comandos ----------
 
-    @commands.command(name="play", aliases=["p"], help="Reproduce un link de YouTube o busca por nombre.")
-    async def play(self, ctx: commands.Context, *, busqueda: str) -> None:
+    async def enqueue(self, ctx: commands.Context, tracks: list[Track]) -> None:
+        """Pone en la cola canciones ya encontradas (lo usan !play y el menú de !buscar)."""
         await self.ensure_voice(ctx)
         player = self.get_player(ctx)
-        async with ctx.typing():
-            try:
-                tracks = await fetch_tracks(busqueda.strip("<>"), ctx.author.display_name)
-            except Exception as exc:
-                log.warning("Búsqueda fallida '%s': %s", busqueda, exc)
-                tracks = []
-        if not tracks:
-            await say(
-                self.bot, ctx.channel,
-                f"{ctx.author.display_name} te pidió poner '{busqueda}' pero no encontraste nada en YouTube.",
-                "No encontré nada con eso 😕",
-            )
-            return
-
         historial_canciones.record(ctx.author, [t.title for t in tracks])
         was_busy = player.current is not None or bool(player.queue)
         player.add(tracks)
@@ -394,6 +587,83 @@ class Music(commands.Cog, name="Música"):
                 f"{ctx.author.display_name} añadió '{track.title}' a la cola; hay otra canción sonando.",
                 f"✅ En cola (#{len(player.queue)}): **{track.title}** `{fmt_duration(track.duration)}`",
             )
+
+    @commands.command(name="play", aliases=["p"], help="Reproduce un link de YouTube o busca por nombre.")
+    async def play(self, ctx: commands.Context, *, busqueda: str) -> None:
+        await self.ensure_voice(ctx)
+        async with ctx.typing():
+            try:
+                tracks = await fetch_tracks(busqueda.strip("<>"), ctx.author.display_name)
+            except Exception as exc:
+                log.warning("Búsqueda fallida '%s': %s", busqueda, exc)
+                tracks = []
+        if not tracks:
+            await say(
+                self.bot, ctx.channel,
+                f"{ctx.author.display_name} te pidió poner '{busqueda}' pero no encontraste nada en YouTube.",
+                "No encontré nada con eso 😕",
+            )
+            return
+        await self.enqueue(ctx, tracks)
+
+    @commands.command(name="buscar", aliases=["search", "b"], help="Busca en YouTube y te deja elegir entre 5 resultados.")
+    async def buscar(self, ctx: commands.Context, *, busqueda: str) -> None:
+        busqueda = busqueda.strip().strip("<>")
+        if is_url(busqueda):
+            await ctx.invoke(self.play, busqueda=busqueda)
+            return
+        await self.ensure_voice(ctx)
+        async with ctx.typing():
+            try:
+                results = await fetch_tracks(busqueda, ctx.author.display_name, limit=SEARCH_RESULTS)
+            except Exception as exc:
+                log.warning("Búsqueda fallida '%s': %s", busqueda, exc)
+                results = []
+        if not results:
+            await say(
+                self.bot, ctx.channel,
+                f"{ctx.author.display_name} te pidió buscar '{busqueda}' pero no encontraste nada en YouTube.",
+                "No encontré nada con eso 😕",
+            )
+            return
+        results = results[:SEARCH_RESULTS]
+        lines = [
+            f"{NUMBER_EMOJIS[i]} **{t.title}**" + (f" · {t.uploader}" if t.uploader else "") + f" `{fmt_duration(t.duration)}`"
+            for i, t in enumerate(results)
+        ]
+        embed = discord.Embed(title=f"🔎 {busqueda[:200]}", description="\n".join(lines), color=EMBED_COLOR)
+        embed.set_footer(text=f"{ctx.author.display_name}, elige una en el menú (tienes 60 s)")
+        view = SearchView(self, ctx, results)
+        view.message = await say(
+            self.bot, ctx.channel,
+            f"{ctx.author.display_name} te pidió buscar '{busqueda}' y le muestras {len(results)} opciones para que elija.",
+            "",
+            embed=embed,
+            view=view,
+        )
+
+    @commands.command(name="radio", help="Modo radio: con la cola vacía, elijo canciones según los gustos de los que escuchan. Uso: radio [on/off]")
+    async def radio(self, ctx: commands.Context, modo: Optional[str] = None) -> None:
+        player = self.players.get(ctx.guild.id)
+        currently_on = bool(player and player.radio)
+        choice = (modo or "").strip().lower()
+        turn_on = True if choice in RADIO_ON else False if choice in RADIO_OFF else not currently_on
+        who = ctx.author.display_name
+        if turn_on:
+            await self.ensure_voice(ctx)
+            player = self.get_player(ctx)
+            player.radio = True
+            player._wake.set()  # si no sonaba nada, empieza ya
+            await say(
+                self.bot, ctx.channel,
+                f"{who} activó el modo radio: cuando se acabe la cola, elegirás canciones según los gustos "
+                "de los que están escuchando.",
+                "📻 Radio activada: cuando se vacíe la cola elijo canciones según lo que les gusta a los que escuchan.",
+            )
+        else:
+            if player:
+                player.radio = False
+            await say(self.bot, ctx.channel, f"{who} apagó el modo radio.", "📻 Radio apagada.")
 
     @commands.command(name="join", aliases=["j"], help="Entra a tu canal de voz.")
     async def join(self, ctx: commands.Context) -> None:
@@ -438,6 +708,7 @@ class Music(commands.Cog, name="Música"):
         player = self.playing_player(ctx)
         player.queue.clear()
         player.loop_mode = False
+        player.radio = False  # si no, la radio elegiría otra canción enseguida
         player.skip()
         await ctx.message.add_reaction("⏹️")
         comment_later(self.bot, ctx.channel, f"{ctx.author.display_name} paró la música y vació la cola.")
