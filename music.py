@@ -252,8 +252,11 @@ class GuildPlayer:
             embed.add_field(name="Canal", value=info["uploader"])
         if info.get("thumbnail"):
             embed.set_thumbnail(url=info["thumbnail"])
+        uploader = f" (del canal de YouTube '{info['uploader']}')" if info.get("uploader") else ""
         await self._say(
-            f"Empieza a sonar '{track.title}', que pidió {track.requester}. Preséntala.",
+            f"Empieza a sonar '{track.title}'{uploader}, que pidió {track.requester}. Preséntala con "
+            "algo concreto de la canción o del artista si los conoces (si es música de League of "
+            "Legends, habla de los campeones que la cantan o de su historia).",
             "",
             embed=embed,
         )

@@ -54,6 +54,8 @@ LANGUAGE = _env("PERSONA_LANGUAGE", "CAI_LANGUAGE", default="español")
 MUSIC_COMMENTS = _env_bool("PERSONA_MUSIC_COMMENTS", "CAI_MUSIC_COMMENTS", default=True)
 USE_PROFILE = _env_bool("PERSONA_USE_PROFILE", "CAI_USE_PROFILE", default=True)
 ALLOW_DM = _env_bool("PERSONA_ALLOW_DM", "CAI_ALLOW_DM", default=True)
+# true = se le puede pedir música con palabras normales ("@Lillia poneme Tik Tok de Kesha")
+MUSIC_CONTROL = _env_bool("PERSONA_MUSIC_CONTROL", default=True)
 # Curiosidades sobre la canción que suena: probabilidad por canción y máximo por día.
 TRIVIA_CHANCE = float(_env("PERSONA_TRIVIA_CHANCE", default="0.15"))
 TRIVIA_PER_DAY = int(_env("PERSONA_TRIVIA_PER_DAY", default="1"))
@@ -64,6 +66,31 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 PROFILE_FILE = DATA_DIR / "perfil.json"
 TRIVIA_FILE = DATA_DIR / "curiosidades.json"
 NO_MENTIONS = discord.AllowedMentions.none()
+
+
+# Órdenes que el personaje puede añadir a su respuesta: [[PLAY: búsqueda]], [[SKIP]], ...
+ACTION_RE = re.compile(r"\[\[\s*(PLAY|SKIP|STOP|PAUSE|RESUME|LOOP|VOLUME|LEAVE)\s*(?::\s*([^\]\n]*?))?\s*\]\]", re.I)
+ACTION_COMMANDS = {
+    "play": "play", "skip": "skip", "stop": "stop", "pause": "pause",
+    "resume": "resume", "loop": "loop", "volume": "volume", "leave": "leave",
+}
+MAX_ACTIONS = 5
+
+
+def extract_actions(reply: str) -> tuple[str, list[tuple[str, str]]]:
+    """Separa el texto visible de las órdenes de música que el personaje pidió ejecutar."""
+    actions = [(name.lower(), (arg or "").strip()) for name, arg in ACTION_RE.findall(reply)]
+    text = ACTION_RE.sub("", reply)
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(line.rstrip() for line in text.splitlines())).strip()
+    plays = 0
+    kept = []
+    for name, arg in actions:
+        if name == "play":
+            if not arg or plays >= 3:
+                continue
+            plays += 1
+        kept.append((name, arg))
+    return text, kept[:MAX_ACTIONS]
 
 
 def _split(text: str, size: int = 2000) -> list[str]:
@@ -84,7 +111,7 @@ def create_backend():
             from ia_gemini import GeminiBackend
             from personaje import load_character
 
-            return GeminiBackend(GEMINI_API_KEY, load_character(), LANGUAGE, GEMINI_MODELS)
+            return GeminiBackend(GEMINI_API_KEY, load_character(), LANGUAGE, GEMINI_MODELS, MUSIC_CONTROL)
         if provider == "characterai":
             if not (CAI_TOKEN and CAI_CHARACTER_ID):
                 raise RuntimeError("faltan CAI_TOKEN o CAI_CHARACTER_ID en .env")
@@ -173,7 +200,8 @@ class Persona(commands.Cog, name="Personaje"):
         if not (MUSIC_COMMENTS and self.available()):
             return None
         prompt = f"(({situation} Reacciona en personaje, en {LANGUAGE}, con una o dos frases cortas.))"
-        return await self.ask(channel, prompt, COMMENT_TIMEOUT, wait=False, fast=True)
+        line = await self.ask(channel, prompt, COMMENT_TIMEOUT, wait=False, fast=True)
+        return extract_actions(line)[0] or None if line else None  # en avisos no se obedecen órdenes
 
     # ---------- Arranque y perfil (nombre y avatar) ----------
 
@@ -301,13 +329,43 @@ class Persona(commands.Cog, name="Personaje"):
             if not direct:
                 return
             reply = "*(no me sale responder ahora mismo, prueba otra vez en un rato)*"
-        chunks = _split(reply)
-        try:
-            await message.reply(chunks[0], mention_author=False, allowed_mentions=NO_MENTIONS)
-            for chunk in chunks[1:]:
-                await message.channel.send(chunk, allowed_mentions=NO_MENTIONS)
-        except discord.HTTPException as exc:
-            log.warning("No se pudo enviar la respuesta: %s", exc)
+        reply, actions = extract_actions(reply)
+        if reply:
+            chunks = _split(reply)
+            try:
+                await message.reply(chunks[0], mention_author=False, allowed_mentions=NO_MENTIONS)
+                for chunk in chunks[1:]:
+                    await message.channel.send(chunk, allowed_mentions=NO_MENTIONS)
+            except discord.HTTPException as exc:
+                log.warning("No se pudo enviar la respuesta: %s", exc)
+        # Solo se obedece si le hablaron directamente y dentro de un servidor (la música va por servidor).
+        if actions and direct and MUSIC_CONTROL and message.guild is not None:
+            await self._run_actions(message, actions)
+
+    async def _run_actions(self, message: discord.Message, actions: list[tuple[str, str]]) -> None:
+        """Ejecuta las órdenes de música como si la persona hubiera escrito el comando."""
+        ctx = await self.bot.get_context(message)
+        for name, arg in actions:
+            command = self.bot.get_command(ACTION_COMMANDS[name])
+            if command is None:
+                continue
+            ctx.command = command
+            ctx.invoked_with = command.name
+            log.info("%s pidió por chat: %s %s", message.author.display_name, name, arg)
+            try:
+                if name == "play":
+                    await ctx.invoke(command, busqueda=arg)
+                elif name == "volume":
+                    number = re.search(r"\d+", arg)
+                    if not number:
+                        continue
+                    await ctx.invoke(command, nivel=int(number.group()))
+                else:
+                    await ctx.invoke(command)
+            except commands.CommandError as exc:
+                await self.bot.on_command_error(ctx, exc)
+            except Exception as exc:
+                await self.bot.on_command_error(ctx, commands.CommandInvokeError(exc))
 
     # ---------- Comandos ----------
 
@@ -439,6 +497,7 @@ def maybe_song_trivia(
                 f"{LANGUAGE}, dos o tres frases, con emojis.))"
             )
             line = await persona.ask(channel, prompt, REPLY_TIMEOUT, wait=False)
+            line = extract_actions(line)[0] if line else None
             if not line or not still_playing():
                 return
             await channel.send(line, allowed_mentions=NO_MENTIONS)

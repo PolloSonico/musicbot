@@ -106,6 +106,12 @@ El bot puede hablar como un personaje, por defecto **Lillia** de League of Legen
   (`!reset` la borra).
 - **Música con personalidad:** los avisos (canción en cola, qué está sonando, skip, errores,
   desconexión...) los dice el personaje. Debajo sigue apareciendo el dato en pequeño.
+- **Pedirle música hablando normal:** mencionándola o respondiéndole, por ejemplo
+  `@Lillia poneme Tik Tok de Kesha`, `@Lillia pon una canción que te guste a ti`,
+  `@Lillia salta esta`, `@Lillia bajale el volumen`. Ella responde y ejecuta la orden
+  (se desactiva con `PERSONA_MUSIC_CONTROL=false`). Si la IA está sin cupo, usa los comandos `!`.
+- **Conoce la música de League:** K/DA, Pentakill, True Damage, HEARTSTEEL, los temas de los Mundiales
+  y Arcane; cuando suenan, habla de los campeones que las cantan.
 - **Curiosidades:** de vez en cuando (15% de las canciones, máximo una vez al día) comenta por su
   cuenta algún dato de la canción que suena: la banda, la letra, la melodía... Se ajusta con
   `PERSONA_TRIVIA_CHANCE` y `PERSONA_TRIVIA_PER_DAY`.
