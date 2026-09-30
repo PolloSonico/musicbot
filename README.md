@@ -110,6 +110,9 @@ El bot puede hablar como un personaje, por defecto **Lillia** de League of Legen
   `@Lillia poneme Tik Tok de Kesha`, `@Lillia pon una canción que te guste a ti`,
   `@Lillia salta esta`, `@Lillia bajale el volumen`. Ella responde y ejecuta la orden
   (se desactiva con `PERSONA_MUSIC_CONTROL=false`). Si la IA está sin cupo, usa los comandos `!`.
+- **Recuerda qué pide cada uno:** guarda las últimas 50 canciones pedidas por persona (por su cuenta
+  de Discord, aunque cambie el apodo del servidor) en `data/canciones_por_usuario.json`. Así puedes
+  pedirle `@Lillia poneme algo que me pueda gustar` o preguntarle `¿qué música me gusta?`.
 - **Conoce la música de League:** K/DA, Pentakill, True Damage, HEARTSTEEL, los temas de los Mundiales
   y Arcane; cuando suenan, habla de los campeones que las cantan.
 - **Curiosidades:** de vez en cuando (15% de las canciones, máximo una vez al día) comenta por su
@@ -130,6 +133,12 @@ El bot puede hablar como un personaje, por defecto **Lillia** de League of Legen
   frases está bien: más que eso hace las respuestas más lentas y gasta más cupo.
 - También puedes usar una **character card** de [chub.ai](https://chub.ai): descarga el personaje
   como PNG, ponlo en la carpeta `personajes` y en `.env` pon `PERSONA_FILE=personajes/archivo.png`.
+
+### Modelos lentos o saturados
+El bot aprende qué modelos de Gemini responden rápido: cada vez que uno está saturado o tarda
+demasiado, baja en la lista, y los que responden bien suben (el castigo se va olvidando con las
+horas, así que un modelo puede volver a subir). `!personaje` muestra el orden actual y el tiempo
+medio de cada modelo.
 
 ### Si se acaba el cupo gratis
 El bot usa el mejor modelo gratuito y, si se le acaba el cupo, pasa al siguiente. Si se acaban todos:

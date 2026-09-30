@@ -12,6 +12,7 @@ import discord
 import yt_dlp
 from discord.ext import commands
 
+import historial_canciones
 from persona import comment_later, maybe_song_trivia, say
 
 log = logging.getLogger("music")
@@ -377,6 +378,7 @@ class Music(commands.Cog, name="Música"):
             )
             return
 
+        historial_canciones.record(ctx.author, [t.title for t in tracks])
         was_busy = player.current is not None or bool(player.queue)
         player.add(tracks)
         if len(tracks) > 1:

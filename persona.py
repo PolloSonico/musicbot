@@ -26,6 +26,8 @@ from typing import Callable, Optional
 import discord
 from discord.ext import commands
 
+import historial_canciones
+
 log = logging.getLogger("persona")
 
 
@@ -162,8 +164,15 @@ class Persona(commands.Cog, name="Personaje"):
         events = self._events.setdefault(channel.id, deque(maxlen=6))
         events.append(f"[{datetime.now():%H:%M}] {situation}")
 
-    def _context(self, channel: discord.abc.Messageable) -> str:
+    def _context(self, channel: discord.abc.Messageable, people: Optional[list] = None) -> str:
         parts = [f"Hora actual: {datetime.now():%H:%M}."]
+        # Gustos musicales de quien habla y de las personas que menciona.
+        for person in people or []:
+            try:
+                songs = historial_canciones.summary(person)
+            except Exception:
+                songs = None
+            parts.append(songs or f"{person.display_name} todavía no te pidió ninguna canción.")
         guild = getattr(channel, "guild", None)
         music = self.bot.get_cog("Música")
         if guild is not None and music is not None and hasattr(music, "status_text"):
@@ -182,13 +191,15 @@ class Persona(commands.Cog, name="Personaje"):
         timeout: float = REPLY_TIMEOUT,
         wait: bool = True,
         fast: bool = False,
+        people: Optional[list] = None,
     ) -> Optional[str]:
         """Manda un mensaje al personaje (una conversación por canal). None si no hay respuesta."""
         if not self.available():
             return None
         try:
             async with asyncio.timeout(timeout):
-                return await self.backend.ask(str(channel.id), text, self._context(channel), wait, fast)
+                context = self._context(channel, people)
+                return await self.backend.ask(str(channel.id), text, context, wait, fast)
         except TimeoutError:
             log.warning("%s tardó más de %ss en responder", self.backend.provider, timeout)
         except Exception:
@@ -320,7 +331,10 @@ class Persona(commands.Cog, name="Personaje"):
             return
 
         async with message.channel.typing():
-            reply = await self.ask(message.channel, f"{message.author.display_name}: {text}")
+            people = [message.author] + [
+                user for user in message.mentions if user != self.bot.user and not user.bot
+            ][:3]
+            reply = await self.ask(message.channel, f"{message.author.display_name}: {text}", people=people)
         if reply is None:
             if not self.backend.available():
                 if direct:
@@ -387,6 +401,12 @@ class Persona(commands.Cog, name="Personaje"):
         embed = discord.Embed(title=self.backend.name, description=self.backend.description[:4000], color=0x9B59B6)
         embed.add_field(name="IA", value=self.backend.provider)
         embed.add_field(name="Estado", value=status)
+        if hasattr(self.backend, "ranking"):
+            lines = []
+            for model, seconds, fails in self.backend.ranking()[:6]:
+                speed = f"{seconds:.1f}s" if seconds is not None else "sin datos"
+                lines.append(f"`{model}` · {speed} · fallos {fails:.0%}")
+            embed.add_field(name="Modelos (en orden de preferencia)", value="\n".join(lines) or "-", inline=False)
         await ctx.send(embed=embed)
 
 
