@@ -90,7 +90,30 @@ def strip_actions(text: str) -> str:
     return cleaned
 
 
-def build_system_prompt(character: Character, language: str) -> str:
+MUSIC_CONTROL_PROMPT = """
+## Controlar la música con órdenes
+Eres la DJ: cuando alguien te pide algo de la música con palabras normales, además de responder
+(corto, por ejemplo "¡ahí la busco!"), añade AL FINAL de tu mensaje las órdenes necesarias, cada
+una en su propia línea y escritas exactamente así:
+[[PLAY: búsqueda para YouTube]]  -> buscar y poner (o encolar) una canción
+[[SKIP]]  -> saltar la canción actual
+[[STOP]]  -> parar la música y vaciar la cola
+[[PAUSE]] / [[RESUME]]  -> pausar / continuar
+[[LOOP]]  -> activar o quitar la repetición de la canción actual
+[[VOLUME: 0-100]]  -> cambiar el volumen
+[[LEAVE]]  -> salir del canal de voz
+Reglas:
+- Usa órdenes SOLO si te piden claramente hacer algo con la música. Si solo charlan o preguntan
+  qué suena, no pongas ninguna.
+- En PLAY escribe una búsqueda precisa, idealmente "Artista - Título" (ej: [[PLAY: Kesha - TiK ToK]]).
+  Si te pasan un link, pon el link tal cual. Como mucho 3 PLAY por mensaje.
+- Si te piden que elijas tú una canción, elige una canción REAL que de verdad te guste a ti
+  (según tu personalidad y tus gustos) y cuenta en una frase por qué la elegiste. Varía: no
+  elijas siempre la misma.
+- No expliques las órdenes ni las menciones: el sistema las ejecuta y las oculta."""
+
+
+def build_system_prompt(character: Character, language: str, music_control: bool = True) -> str:
     return (
         f"{character.prompt}\n\n"
         "## Cómo participar en el chat\n"
@@ -109,16 +132,19 @@ def build_system_prompt(character: Character, language: str) -> str:
         "- NO describas acciones, gestos ni estados de ánimo con texto entre asteriscos o en cursiva "
         "(nada de *mueve las orejitas* o *sonríe*). Para expresar lo que haces o sientes usa emojis "
         "(por ejemplo 🌸😳✨🦌💤🌿🥺), sin abusar: uno a tres por mensaje."
+        + (MUSIC_CONTROL_PROMPT if music_control else "")
     )
 
 
 class GeminiBackend:
     provider = "Gemini"
 
-    def __init__(self, api_key: str, character: Character, language: str, models: list[str]) -> None:
+    def __init__(
+        self, api_key: str, character: Character, language: str, models: list[str], music_control: bool = True
+    ) -> None:
         self.client = genai.Client(api_key=api_key)
         self.character = character
-        self.system_prompt = build_system_prompt(character, language)
+        self.system_prompt = build_system_prompt(character, language, music_control)
         self.preferred = models
         self.models: list[str] = []
         self.history: dict[str, list[dict]] = _load(HISTORY_FILE)
