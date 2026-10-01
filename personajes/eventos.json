@@ -1,0 +1,120 @@
+{
+  "_ayuda": "Calendario de Lillia. desde/hasta: AAAA-MM-DD (una vez) o MM-DD (todos los años). anunciar: lo anuncia sola el primer día. buscar: al anunciarlo busca en Google datos del día. Se recarga solo al guardar el archivo. Las fechas del MSI y de las finales de ligas que todavía no están acá las busca sola cada 2 semanas (data/eventos_esports.json).",
+  "eventos": [
+    {
+      "nombre": "Se viene el Mundial de League of Legends 2026",
+      "desde": "2026-10-08",
+      "hasta": "2026-10-14",
+      "contexto": "En pocos días empieza el Mundial (Worlds 2026), esta vez en Estados Unidos: Play-In en el Riot Games Arena de Los Ángeles (15 al 18 de octubre), Fase Suiza y eliminatorias en Allen, Texas, y la final el 14 de noviembre en el Barclays Center de Nueva York. T1 llega como tricampeón (ganó 2023, 2024 y 2025). Estás emocionada y un poquito nerviosa por todos esos sueños de campeonato.",
+      "anunciar": true,
+      "buscar": false
+    },
+    {
+      "nombre": "Final de la LCS 2026 (Norteamérica)",
+      "desde": "2026-10-03",
+      "hasta": "2026-10-04",
+      "contexto": "Se juega el LCS Championship en el Gas South Arena (Atlanta, Estados Unidos): el sábado 3 y la gran final el domingo 4 de octubre. El campeón representa a Norteamérica en el Mundial. Si te preguntan resultados, búscalos; no los inventes.",
+      "anunciar": true,
+      "buscar": true
+    },
+    {
+      "nombre": "Final del CBLOL 2026 (Brasil)",
+      "desde": "2026-10-10",
+      "contexto": "Hoy es la final de la segunda etapa del CBLOL en la Arena Carioca 1 (Parque Olímpico, Río de Janeiro). El campeón va directo a la Fase Suiza del Mundial. Si te preguntan resultados, búscalos; no los inventes.",
+      "anunciar": true,
+      "buscar": true
+    },
+    {
+      "nombre": "Mundial 2026: Play-In",
+      "desde": "2026-10-15",
+      "hasta": "2026-10-18",
+      "contexto": "Se juega el Play-In del Mundial en el Riot Games Arena de Los Ángeles: los equipos de regiones más chicas pelean por entrar a la Fase Suiza. Si te preguntan resultados, búscalos; no los inventes.",
+      "anunciar": true,
+      "buscar": true
+    },
+    {
+      "nombre": "Mundial 2026: pausa antes de la Fase Suiza",
+      "desde": "2026-10-19",
+      "hasta": "2026-10-22",
+      "contexto": "Terminó el Play-In y en pocos días empieza la Fase Suiza del Mundial en Allen, Texas (desde el 23 de octubre).",
+      "anunciar": false
+    },
+    {
+      "nombre": "Mundial 2026: Fase Suiza",
+      "desde": "2026-10-23",
+      "hasta": "2026-10-31",
+      "contexto": "Se juega la Fase Suiza del Mundial en el Credit Union of Texas Event Center (Allen, Texas), del 23 al 26 y del 28 al 31 de octubre. Los mejores pasan a cuartos de final. El 31 además es Halloween.",
+      "anunciar": true,
+      "buscar": true
+    },
+    {
+      "nombre": "Mundial 2026: cuartos de final",
+      "desde": "2026-11-03",
+      "hasta": "2026-11-06",
+      "contexto": "Cuartos de final del Mundial en Allen, Texas. Partidos al mejor de cinco: cada serie es un sueño que puede romperse.",
+      "anunciar": true,
+      "buscar": true
+    },
+    {
+      "nombre": "Mundial 2026: semifinales",
+      "desde": "2026-11-07",
+      "hasta": "2026-11-08",
+      "contexto": "Semifinales del Mundial en Allen, Texas. Quedan solo cuatro equipos.",
+      "anunciar": true,
+      "buscar": true
+    },
+    {
+      "nombre": "Semana de la gran final del Mundial",
+      "desde": "2026-11-09",
+      "hasta": "2026-11-13",
+      "contexto": "Ya se saben los finalistas del Mundial (búscalos si te preguntan). La gran final es el sábado 14 de noviembre en el Barclays Center de Nueva York.",
+      "anunciar": false
+    },
+    {
+      "nombre": "Gran final del Mundial 2026",
+      "desde": "2026-11-14",
+      "contexto": "¡Hoy es la gran final del Mundial en el Barclays Center de Nueva York! El ganador levanta la Copa del Invocador. Estás nerviosísima y quieres verla con todos.",
+      "anunciar": true,
+      "buscar": true
+    },
+    {
+      "nombre": "Después del Mundial 2026",
+      "desde": "2026-11-15",
+      "hasta": "2026-11-21",
+      "contexto": "El Mundial terminó hace pocos días (la final fue el 14 de noviembre en Nueva York). Si hablan del campeón, búscalo para no equivocarte.",
+      "anunciar": false
+    },
+    {
+      "nombre": "Aniversario de Lillia",
+      "desde": "07-22",
+      "contexto": "Hoy es tu aniversario: un 22 de julio (de 2020, parche 10.15) llegaste a la Grieta del Invocador. Te da vergüenza que lo celebren, pero en secreto te hace muy feliz.",
+      "anunciar": true
+    },
+    {
+      "nombre": "Día del Amigo",
+      "desde": "07-20",
+      "contexto": "En Argentina y otros países de Latinoamérica hoy es el Día del Amigo. Para ti los amigos son los que cuidan los sueños de los demás.",
+      "anunciar": false
+    },
+    {
+      "nombre": "Halloween",
+      "desde": "10-31",
+      "contexto": "Es Halloween: noche de disfraces y sustos. Las pesadillas te dan miedito, pero los disfraces te parecen adorables.",
+      "anunciar": false
+    },
+    {
+      "nombre": "Navidad",
+      "desde": "12-24",
+      "hasta": "12-25",
+      "contexto": "Es Nochebuena / Navidad. Te encanta la idea de la gente reunida compartiendo deseos (que son como sueños).",
+      "anunciar": false
+    },
+    {
+      "nombre": "Fin de año",
+      "desde": "12-31",
+      "hasta": "01-01",
+      "contexto": "Es fin de año / Año Nuevo: momento de pedir sueños nuevos para el año que empieza.",
+      "anunciar": false
+    }
+  ]
+}

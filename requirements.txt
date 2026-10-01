@@ -1,5 +1,10 @@
-discord.py[voice]>=2.7
+# Versiones fijas: así una actualización de una librería no rompe el bot sin aviso.
+# Para actualizar a propósito: cambia el número acá y ejecuta windows\instalar.bat.
+discord.py[voice]==2.7.1
+python-dotenv==1.2.3
+google-genai==2.26.0
+# yt-dlp va SIN versión fija a propósito: YouTube cambia seguido y hay que tener siempre la última
+# (iniciar_bot.bat lo actualiza en cada arranque).
 yt-dlp[default,deno]
-python-dotenv>=1.0
-google-genai>=2.0
+# Datos de zonas horarias (Windows no los trae): conviene que se actualicen.
 tzdata

@@ -1,6 +1,42 @@
+# ---------- Datos sensibles (claves y datos de personas) ----------
+# Claves: token de Discord, de los ayudantes, Gemini, Groq, Riot... (la plantilla .env.example sí se sube)
 .env
+.env.*
+!.env.example
+# Datos de los usuarios: cuentas de Riot (PUUID), lo que Lillia recuerda de cada uno, recordatorios,
+# historial de canciones y partidas, resúmenes de las charlas, estado de la IA...
+data/
+# Copias de seguridad de data/ (mismos datos personales)
+backups/
+# Logs: nombres e IDs de Discord, mensajes de error, horarios de uso
+logs/
+*.log
+
+# ---------- Particulares de este servidor (no hacen falta para que el bot funcione) ----------
+# Frases copiadas del juego (texto de Riot): cada uno pega las suyas, el bot funciona sin ellas
+personajes/lillia_frases.txt
+# Imagen para el avatar (arte de Riot); se elige con PERSONA_AVATAR
+personajes/*.jpg
+personajes/*.jpeg
+personajes/*.png
+personajes/*.webp
+# Páginas de estadísticas que genera !panel (datos de los usuarios)
+panel/
+# Archivos de ejemplo/capturas que dejó Claude
+Claude outputs/
+
+# ---------- Irrelevantes (se generan solos) ----------
 .venv/
+venv/
 __pycache__/
 *.pyc
-logs/
-data/
+.pytest_cache/
+# Guardado seguro: temporales y JSON rotos apartados
+*.tmp
+*.roto
+# Editores y sistema
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

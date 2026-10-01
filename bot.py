@@ -5,6 +5,7 @@ import logging.handlers
 import os
 import socket
 import subprocess
+import time
 from pathlib import Path
 
 import discord
@@ -39,11 +40,17 @@ def setup_logging() -> None:
     root.addHandler(console_handler)
 
 
+# Bienvenida a miembros nuevos: necesita el "Server Members Intent" (Developer Portal -> Bot).
+WELCOME = os.getenv("PERSONA_WELCOME", "true").strip().lower() not in ("0", "false", "no")
+
+
 class MusicBot(commands.Bot):
-    def __init__(self) -> None:
+    def __init__(self, members: bool = WELCOME) -> None:
         intents = discord.Intents.default()
         intents.message_content = True  # necesario para leer comandos con prefijo
         intents.voice_states = True
+        intents.members = members  # para saber cuándo entra alguien nuevo al servidor
+        self.members_intent_missing = WELCOME and not members
         super().__init__(
             command_prefix=commands.when_mentioned_or(PREFIX),
             intents=intents,
@@ -51,10 +58,29 @@ class MusicBot(commands.Bot):
             case_insensitive=True,
             allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, replied_user=False),
         )
+        self.command_prefix_text = PREFIX
+        self.started_at = time.time()  # para !estado
 
     async def setup_hook(self) -> None:
+        import ayudantes
+
+        await ayudantes.start_all()  # bots ayudantes de HELPER_TOKENS (si hay)
         await self.load_extension("persona")
         await self.load_extension("music")
+        await self.load_extension("wrapped")
+        await self.load_extension("eventos")
+        await self.load_extension("riot")
+        await self.load_extension("estado")
+        await self.load_extension("panel")
+        await self.load_extension("dados")
+        await self.load_extension("seleccion")
+        await self.load_extension("recordatorios")
+
+    async def close(self) -> None:
+        import ayudantes
+
+        await ayudantes.close_all()
+        await super().close()
 
     async def on_ready(self) -> None:
         logging.info("Conectado como %s (id %s)", self.user, self.user.id)
@@ -65,7 +91,7 @@ class MusicBot(commands.Bot):
             music.refresh_presence()
 
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
-        if isinstance(error, commands.CommandNotFound):
+        if isinstance(error, commands.CommandNotFound) or getattr(error, "handled", False):
             return
         from persona import say  # los avisos de error también los dice el personaje
 
@@ -133,9 +159,18 @@ async def main() -> None:
     _lock = acquire_single_instance()  # se libera sola al cerrar el bot
     if not TOKEN or TOKEN == "pega_aqui_tu_token":
         raise SystemExit("Falta DISCORD_TOKEN en el archivo .env")
-    bot = MusicBot()
-    async with bot:
-        await bot.start(TOKEN)
+    try:
+        async with MusicBot() as bot:
+            await bot.start(TOKEN)
+    except discord.PrivilegedIntentsRequired:
+        # Falta activar "Server Members Intent" en el Developer Portal: el bot arranca igual, sin la
+        # bienvenida a miembros nuevos, y le avisa al dueño por DM cómo activarla.
+        logging.warning(
+            "Para la bienvenida a miembros nuevos activa 'Server Members Intent' en "
+            "https://discord.com/developers/applications -> tu app -> Bot. Arrancando sin bienvenida."
+        )
+        async with MusicBot(members=False) as bot:
+            await bot.start(TOKEN)
 
 
 if __name__ == "__main__":

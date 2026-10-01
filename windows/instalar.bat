@@ -23,6 +23,8 @@ if not exist ".venv\Scripts\python.exe" (
 echo Instalando dependencias...
 ".venv\Scripts\python.exe" -m pip install --upgrade pip >nul
 ".venv\Scripts\python.exe" -m pip install -U -r requirements.txt || (echo [ERROR] Fallo pip install & pause & exit /b 1)
+rem Libreria de Character.AI (ya no se usa): se desinstala si quedo de versiones viejas
+".venv\Scripts\python.exe" -m pip uninstall -y PyCharacterAI >nul 2>&1
 
 where ffmpeg >nul 2>&1
 if errorlevel 1 (

@@ -5,13 +5,14 @@ Se guarda por el ID de Discord (no cambia nunca) junto con el nombre de usuario 
 saber qué música le gusta a cada uno ("pon algo que me pueda gustar", "¿qué música me gusta?").
 """
 
-import json
 import logging
 from datetime import date
 from pathlib import Path
 from typing import Optional
 
 import discord
+
+from jsonio import load_json, save_json
 
 log = logging.getLogger("persona")
 
@@ -22,10 +23,8 @@ IN_CONTEXT = 30  # cuántas se le pasan a la IA (las más recientes)
 
 
 def _load() -> dict:
-    try:
-        return json.loads(DATA_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    data = load_json(DATA_FILE, {})
+    return data if isinstance(data, dict) else {}
 
 
 def record(user: discord.abc.User, titles: list[str]) -> None:
@@ -39,8 +38,7 @@ def record(user: discord.abc.User, titles: list[str]) -> None:
         today = date.today().isoformat()
         entry["canciones"].extend({"titulo": title, "fecha": today} for title in titles[:MAX_PER_REQUEST])
         entry["canciones"] = entry["canciones"][-MAX_PER_USER:]
-        DATA_FILE.parent.mkdir(exist_ok=True)
-        DATA_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        save_json(DATA_FILE, data)
     except Exception:
         log.exception("No se pudo guardar el historial de canciones")  # nunca debe frenar la música
 
