@@ -29,6 +29,10 @@ import discord
 from discord.ext import commands
 
 import avisos
+import busqueda
+import clima
+import esports_datos
+import opgg
 import historial_canciones
 import letras
 import memoria_personas
@@ -57,10 +61,10 @@ LANGUAGE = _env("PERSONA_LANGUAGE", default="español")
 MUSIC_COMMENTS = _env_bool("PERSONA_MUSIC_COMMENTS", default=True)
 USE_PROFILE = _env_bool("PERSONA_USE_PROFILE", default=True)
 ALLOW_DM = _env_bool("PERSONA_ALLOW_DM", default=True)
-# true = cuando preguntan por builds / picks / runas de League, la IA busca en Google datos del
-# parche actual (u.gg, op.gg, lolalytics, leagueofgraphs...) antes de responder.
+# true = cuando preguntan por builds / picks / runas de League o por esports, se traen datos actuales
+# (OP.GG o la búsqueda en internet) antes de responder.
 LOL_SEARCH = _env_bool("PERSONA_LOL_SEARCH", default=True)
-# true = cuando le hablan directamente, Lillia PUEDE buscar en Google si hace falta un dato actual (clima,
+# true = cuando le hablan directamente, Lillia PUEDE pedir una búsqueda en internet si le falta un dato actual (
 # noticias, horarios, precios...). Ella decide: en la charla normal no busca (y no gasta cupo de búsquedas).
 AUTO_SEARCH = _env_bool("PERSONA_AUTO_SEARCH", default=True)
 # true = se le puede pedir música con palabras normales ("@Lillia poneme Tik Tok de Kesha")
@@ -113,7 +117,7 @@ CHAT_ACTION: contextvars.ContextVar[bool] = contextvars.ContextVar("chat_action"
 
 # Órdenes que el personaje puede añadir a su respuesta: [[PLAY: búsqueda]], [[SKIP]], ...
 ACTION_RE = re.compile(
-    r"\[\[\s*(PLAY|BUSCAR|SKIP|STOP|PAUSE|RESUME|LOOP|VOLUME|LEAVE|RADIO|DADO|RECORDATORIO|RECORDAR|REACCI[OÓ]N)\s*(?::\s*([^\]\n]*?))?\s*\]\]", re.I
+    r"\[\[\s*(PLAY|BUSCAR|SKIP|STOP|PAUSE|RESUME|LOOP|VOLUME|LEAVE|RADIO|DADO|WEB|RECORDATORIO|RECORDAR|REACCI[OÓ]N)\s*(?::\s*([^\]\n]*?))?\s*\]\]", re.I
 )
 ACTION_COMMANDS = {
     "play": "play", "buscar": "buscar", "skip": "skip", "stop": "stop", "pause": "pause",
@@ -135,16 +139,21 @@ LOL_RE = re.compile(
     re.I,
 )
 LOL_INSTRUCTIONS = (
-    "La persona pregunta por League of Legends y necesita datos ACTUALES. Busca en Google estadísticas "
-    "del parche actual en sitios como u.gg, op.gg, lolalytics, leagueofgraphs o mobalytics, y da "
-    "recomendaciones concretas y correctas (campeones, runas, objetos principales, orden de "
-    "habilidades o counters, según lo que pregunte), mencionando el parche. Sigue hablando como tú "
-    "(con tu personalidad y emojis), pero los datos deben ser exactos: no inventes estadísticas. "
-    "Puedes usar una lista corta si ayuda a leerlo. Si la persona tiene su cuenta de League vinculada "
-    "(lo verás en \"Lo que está pasando ahora\"), ten en cuenta su rango y sus campeones más jugados."
+    "La persona pregunta por League of Legends y necesita datos ACTUALES. Abajo tienes los datos reales del "
+    "parche (de OP.GG o de una búsqueda en internet): úsalos para dar recomendaciones concretas y correctas "
+    "(runas, hechizos, objetos por orden, orden de habilidades o counters, según lo que pregunte), mencionando "
+    "el parche. Los porcentajes son de uso (pick rate) o de victorias (win rate): no los confundas. Sigue "
+    "hablando como tú (con tu personalidad y emojis), pero los datos deben ser exactos: no inventes "
+    "estadísticas, y si no hay datos abajo, dilo. Puedes usar una lista corta si ayuda a leerlo. Si la persona "
+    "tiene su cuenta de League vinculada (lo verás en \"Lo que está pasando ahora\"), ten en cuenta su rango y "
+    "sus campeones más jugados."
+)
+NO_WEB_NOTE = (
+    "IMPORTANTE: ahora mismo NO pudiste buscar esto en internet. Si no sabes el dato exacto, dilo así. NO inventes "
+    "fechas, horarios, resultados ni datos actuales de memoria."
 )
 
-# Preguntas sobre la escena competitiva (Mundial, MSI, ligas, equipos): también buscan en Google.
+# Preguntas sobre la escena competitiva (Mundial, MSI, ligas, equipos): también traen datos actuales.
 ESPORTS_RE = re.compile(
     r"\b(worlds|mundial(?:es)? (?:de )?(?:lol|league)|msi|lck(?: ?cl)?|lpl|lec|lcs|lta|lcp|cblol|lla|nacl|ldl|ljl|vcs|"
     r"emea masters|liga (?:latinoamericana|regional)|first stand|esports?|lolesports|fase suiza|swiss stage|play-?ins?|"
@@ -169,21 +178,26 @@ NOW_RE = re.compile(
     r"a cu[aá]nto est[aá]|cu[aá]nto (?:sale|cuesta|vale) (?:hoy|ahora)|estreno|cu[aá]ndo sale)\b",
     re.I,
 )
-AUTO_SEARCH_NOTE = (
-    "Si para responder necesitas un dato actual que no sabes (clima, noticias, horarios, precios, resultados), "
-    "búscalo en Google; para la charla normal no busques. Nunca inventes datos actuales."
+WEB_ACTION_NOTE = (
+    "Si para responder necesitas un dato actual que NO sabes con seguridad (noticias, precios, fichajes, fechas, "
+    "resultados, algo reciente), no lo inventes: responde ÚNICAMENTE con una línea [[WEB: lo que hay que buscar]] "
+    "(una búsqueda corta y precisa, como la escribirías en Google) y nada más; el sistema busca y te pasa los "
+    "resultados para que respondas. Para la charla normal o cosas que ya sabes, NO la uses."
 )
 ESPORTS_INSTRUCTIONS = (
-    "La persona pregunta por la escena competitiva de League of Legends (Mundial/Worlds, MSI, ligas, "
-    "equipos o jugadores). Busca en Google resultados, calendario y noticias ACTUALES (lolesports.com, "
-    "Liquipedia, medios de esports) y responde con datos exactos y con fecha. Si pregunta cuándo juega un "
-    "jugador, busca en qué equipo está HOY y el próximo partido de ese equipo; da día y hora convertidos a "
-    "la hora de ustedes ({tz}). No inventes resultados ni fechas: si un partido todavía no se jugó o no "
-    "encuentras la fecha, dilo. Sigue hablando como tú, con tu personalidad."
+    "La persona pregunta por la escena competitiva de League of Legends (Mundial/Worlds, MSI, ligas, equipos o "
+    "jugadores). Abajo tienes datos ACTUALES (OP.GG y una búsqueda en internet): MANDAN sobre lo que recuerdas, "
+    "que está desactualizado (los jugadores cambian de equipo cada año). Razona así: 1) en qué equipo está HOY "
+    "el jugador según los datos; 2) busca el próximo partido de ESE equipo en el calendario; 3) si la liga está "
+    "en playoffs y su equipo no aparece en el próximo partido, es porque espera rival: explica el cuadro (por "
+    "ejemplo: \"el sábado juegan A y B, y el que gane juega la final contra su equipo el día X\"). No digas que "
+    "\"ya no juega\" en una liga salvo que los datos lo digan. Da día y hora convertidos a la hora de ustedes "
+    "({tz}). No inventes resultados ni fechas: si algo no está en los datos, dilo. Sigue hablando como tú, con "
+    "tu personalidad."
 )
 CURRENT_INSTRUCTIONS = (
     "La persona pregunta por algo que pasa AHORA o pronto (un partido, una fecha, un resultado, el clima, una "
-    "noticia, un precio). Busca en Google y responde con el dato exacto y concreto: días y horas convertidos a "
+    "noticia, un precio). Responde con los datos reales de abajo, exactos y concretos: días y horas convertidos a "
     "la hora de ustedes ({tz}); si es el clima, el pronóstico de los días que pregunta (probabilidad de lluvia y "
     "temperaturas) para ese lugar. Si no dice de qué deporte o juego habla y el nombre es de un jugador o equipo "
     "de League of Legends, es de esports de LoL. No inventes nada: si no lo encuentras, dilo. Sigue hablando "
@@ -361,20 +375,24 @@ class Persona(commands.Cog, name="Personaje"):
         fast: bool = False,
         people: Optional[list] = None,
         remember: Optional[bool] = None,
-        search: bool = False,
+        web: str = "",
         extra: str = "",
         images: Optional[list[tuple[str, bytes]]] = None,
     ) -> Optional[str]:
         """Manda un mensaje al personaje (una conversación por canal). None si no hay respuesta.
         remember=False: no queda en la memoria de la charla (avisos automáticos, radio...).
+        web: algo para buscar antes en internet (Tavily); los resultados se le pasan como información real.
         images: imágenes que puede ver junto al mensaje."""
         if not self.available():
             return None
         try:
             async with asyncio.timeout(timeout):
+                if web:
+                    results = await busqueda.context_for(web)
+                    extra = f"{extra}\n\n{results or NO_WEB_NOTE}".strip()
                 context = self._context(channel, people, extra)
                 reply = await self.backend.ask(
-                    str(channel.id), text, context, wait, fast, remember, search, images=images
+                    str(channel.id), text, context, wait, fast, remember, images=images
                 )
                 if not reply:
                     return reply
@@ -631,26 +649,36 @@ class Persona(commands.Cog, name="Personaje"):
 
         lol_question = LOL_SEARCH and bool(LOL_RE.search(text))
         esports_question = LOL_SEARCH and bool(ESPORTS_RE.search(text))
+        weather_question = bool(clima.WEATHER_RE.search(text))
         current_question = LOL_SEARCH and not esports_question and bool(SCHEDULE_RE.search(text) or NOW_RE.search(text))
         explicit_search = lol_question or esports_question or current_question
-        # Le hablaron directamente: puede buscar si lo necesita (lo decide ella).
-        auto_search = AUTO_SEARCH and direct and not explicit_search
-        search = explicit_search or auto_search
+        web = busqueda.enabled()
         async with message.channel.typing():
             people = [message.author] + [
                 user for user in message.mentions if user != self.bot.user and not user.bot
             ][:3]
             images = await self._images(message)
             extra = await self._league_context(text, lol_question, esports_question)
-            if current_question:
+            found = ""  # datos actuales conseguidos por fuera de la IA
+            if weather_question:  # clima: Open-Meteo
+                found = await clima.context_for(text)
+            elif lol_question:  # builds, counters, tier list: OP.GG
+                try:
+                    found = await asyncio.wait_for(
+                        opgg.context_for(text, frozenset({normalize_name(self.name)})), 30)
+                except Exception:
+                    found = ""
+            elif esports_question or current_question:
+                found = await self._esports_context(text)
+            if not found and explicit_search and web:  # lo demás (o si lo anterior no trajo nada): internet
+                found = await self._web_context(text, lol_question, esports_question)
+            extra = f"{extra}\n\n{found}".strip() if found else extra
+            if current_question and not weather_question:
                 extra = f"{CURRENT_INSTRUCTIONS.format(tz=_local_tz())}\n\n{extra}".strip()
-            elif auto_search:
-                extra = f"{extra}\n\n{AUTO_SEARCH_NOTE}".strip()
-            paused = getattr(self.backend, "search_paused_until", 0)
-            if explicit_search and paused > time.time():
-                extra += (f"\n\nIMPORTANTE: ahora mismo NO puedes buscar en Google (se acabó el cupo de búsquedas "
-                          f"hasta las {datetime.fromtimestamp(paused):%H:%M}). Si no sabes el dato exacto, dilo así y "
-                          "que te pregunten de nuevo después de esa hora. NO inventes fechas, horarios ni resultados.")
+            if AUTO_SEARCH and direct and web and not found and busqueda.available():
+                extra = f"{extra}\n\n{WEB_ACTION_NOTE}".strip()
+            if explicit_search and not found:
+                extra = f"{extra}\n\n{NO_WEB_NOTE}".strip()
             if SONG_RE.search(text) and message.guild is not None:
                 song = await self._current_song_lyrics(message.guild, message.author)
                 extra = f"{extra}\n\n{song}".strip() if song else extra
@@ -663,9 +691,8 @@ class Persona(commands.Cog, name="Personaje"):
             reply = await self.ask(
                 message.channel,
                 f"{message.author.display_name}: {text}",
-                SEARCH_TIMEOUT if search else REPLY_TIMEOUT,
+                SEARCH_TIMEOUT if explicit_search else REPLY_TIMEOUT,
                 people=people,
-                search=search,
                 extra=extra,
                 images=images,
             )
@@ -678,6 +705,23 @@ class Persona(commands.Cog, name="Personaje"):
                 return
             reply = "*(no me sale responder ahora mismo, prueba otra vez en un rato)*"
         reply, actions = extract_actions(reply)
+        web_query = next((arg for name, arg in actions if name == "web" and arg), "")
+        if web_query and direct and busqueda.available():
+            # Lillia pidió buscar algo que no sabía: se busca y se le pregunta de nuevo con los resultados.
+            async with message.channel.typing():
+                results = await busqueda.context_for(web_query)
+                second = await self.ask(
+                    message.channel,
+                    f"((Buscaste en internet \"{web_query}\". "
+                    + (results if results else "No se encontró nada: dilo con honestidad.")
+                    + f" Ahora responde a {message.author.display_name} lo que preguntó: \"{text}\". "
+                    "No pidas otra búsqueda.))",
+                    REPLY_TIMEOUT, people=people,
+                )
+            if second:
+                reply, more = extract_actions(second)
+                actions = [a for a in actions if a[0] != "web"] + [a for a in more if a[0] != "web"]
+        actions = [a for a in actions if a[0] != "web"]
         if reply:
             chunks = _split(reply)
             try:
@@ -714,6 +758,53 @@ class Persona(commands.Cog, name="Personaje"):
             return await asyncio.wait_for(riot.live_context(message.guild, others or people[:1], everyone), 15)
         except Exception as exc:
             log.info("No se pudo ver quién está jugando: %s", exc)
+            return ""
+
+    async def _esports_context(self, text: str) -> str:
+        """Escena competitiva. Primero se averigua el equipo del jugador nombrado (OP.GG); con el equipo se
+        piden el calendario (OP.GG) y una búsqueda en internet más precisa (cuadro de playoffs, fechas)."""
+        async def safe(coro, seconds: float) -> str:
+            try:
+                return await asyncio.wait_for(coro, seconds) or ""
+            except Exception as exc:
+                log.info("Esports: una fuente no respondió (%s)", exc or type(exc).__name__)
+                return ""
+
+        team = (esports_datos.teams_in(text) or [""])[0]
+        names = [n for n in esports_datos.candidate_names(text) if not opgg.is_team_or_league(n)][:2]
+        players = [p for p in await asyncio.gather(*(safe(opgg.pro_player(n, text), 25) for n in names)) if p]
+        if not team and players:  # el equipo sale de la ficha del jugador
+            team = (esports_datos.teams_in(" ".join(players)) or [""])[0]
+        league = opgg.league_in(text)
+        query = re.sub(r"<@!?\d+>", "", text).strip()
+        if team:
+            query = (f"{team} {league.upper() if league else ''} {datetime.now().year} próximo partido: fecha, rival, "
+                     f"cuadro de playoffs y final ({query})")
+        tasks = [safe(opgg.esports(text, team), 25)]
+        if busqueda.available():
+            tasks.append(safe(busqueda.context_for(f"League of Legends esports: {query}", "general", "month"), 25))
+        parts = players + list(await asyncio.gather(*tasks))
+        log.info("Esports: jugador=%s equipo=%s liga=%s -> %s", names, team or "?", league or "?",
+                 [len(p) for p in parts])
+        return "\n\n".join(p for p in parts if p)
+
+    async def _web_context(self, text: str, lol_question: bool, esports_question: bool) -> str:
+        """Busca la pregunta en internet (Tavily) y devuelve los resultados como contexto."""
+        query = re.sub(r"<@!?\d+>", "", text).strip()
+        topic, time_range = "general", None
+        if lol_question:
+            patch = f" parche {dd.patch}" if dd.patch else ""
+            query = f"League of Legends{patch}: {query}"
+            time_range = "month"
+        elif esports_question:
+            query = f"League of Legends esports: {query}"
+            topic, time_range = "news", "month"
+        elif re.search(r"noticias?|qu[eé] pas[oó]", query, re.I):
+            topic, time_range = "news", "week"
+        try:
+            return await asyncio.wait_for(busqueda.context_for(query, topic, time_range), 25)
+        except Exception as exc:
+            log.info("No se pudo buscar en internet: %s", exc)
             return ""
 
     async def _riot_context(self, people: list) -> str:
@@ -894,6 +985,10 @@ def quota_embed(backend) -> discord.Embed:
             elif used:
                 rows.append(f"`{model}`: {used} pedidos hoy")
         embed.add_field(name=f"Respaldo ({backup.provider})", value="\n".join(rows) or "Sin usar hoy ✅", inline=False)
+    if busqueda.enabled():
+        used, limit = busqueda.usage()
+        embed.add_field(name="Búsqueda en internet (Tavily)", value=f"{used} de {limit} búsquedas este mes "
+                        f"({used * 100 // max(limit, 1)}%)", inline=False)
     embed.set_footer(text="Google no informa cuánto cupo queda: el límite de cada modelo se aprende el día que se "
                           "agota. El cupo de Gemini se renueva a medianoche de California.")
     return embed

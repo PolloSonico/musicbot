@@ -111,6 +111,12 @@ class Estado(commands.Cog, name="Estado"):
             ai += f"\nHoy: {used} pedidos (`!cupo` para el detalle)"
             if getattr(backend, "backup", None):
                 ai += f"\nRespaldo: {backend.backup.provider} " + ("🟢" if backend.backup.available() else "😴")
+            import busqueda
+            if busqueda.enabled():
+                used, limit = busqueda.usage()
+                ai += f"\nBúsqueda web: Tavily {used} de {limit} este mes " + ("🟢" if busqueda.available() else "😴")
+            else:
+                ai += "\nBúsqueda web: sin configurar (TAVILY_API_KEY)"
         embed.add_field(name="🧠 IA (Gemini)", value=ai)
 
         # Música

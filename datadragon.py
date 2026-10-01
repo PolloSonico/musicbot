@@ -11,7 +11,7 @@ No necesita ninguna clave. Sirve para que Lillia no dependa solo de lo que "sabe
 
 Todo se guarda en data/datadragon/ y solo se vuelve a descargar cuando cambia el parche.
 Data Dragon no tiene estadísticas (win rates, builds populares): eso sigue saliendo de la
-búsqueda en Google (PERSONA_LOL_SEARCH).
+consulta de datos actuales (PERSONA_LOL_SEARCH).
 """
 
 import asyncio

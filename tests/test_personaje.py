@@ -121,16 +121,6 @@ def test_memoria_larga(data_dir, monkeypatch):
     assert "c" not in backend.summaries
 
 
-def test_sin_cupo_de_busqueda_responde_sin_buscar(data_dir):
-    from google.genai import errors
-
-    quota = errors.APIError(429, {"error": {"code": 429, "message": "Quota exceeded: grounding", "status": "RESOURCE_EXHAUSTED"}})
-    backend = _backend([quota, "respuesta sin buscar"])
-    assert asyncio.run(backend.ask("c", "build de jinx", search=True)) == "respuesta sin buscar"
-    assert backend.gemini_available() and not backend.cooldowns.get("gemini-falso-flash-lite")
-    assert backend.search_paused_until > 0
-
-
 def test_respaldo_elige_modelos_nuevos_si_los_viejos_no_existen():
     import ia_respaldo
 

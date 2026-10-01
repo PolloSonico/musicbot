@@ -2,13 +2,13 @@
 
 - Calendario (personajes/eventos.json): mientras dura un evento (el Mundial, Navidad, su
   aniversario...) lo tiene presente en la charla; si el evento tiene "anunciar": true, el primer día
-  lo anuncia en el canal de eventos (con "buscar": true, busca en Google los datos del día).
+  lo anuncia en el canal de eventos (con "buscar": true, busca en internet los datos del día).
 - Parche nuevo de League: cuando Data Dragon muestra un parche nuevo, lo anuncia y resume los
   cambios principales (buscando las notas del parche).
 - Wrapped mensual: el día 1 publica el Lillia Wrapped del servidor del mes que terminó.
 - Copia de seguridad: una vez por día comprime data/ en backups/ (ver respaldo.py).
 - Buenas noches: si alguien escribe de madrugada, una vez por noche le dice que se vaya a dormir.
-- MSI y finales de ligas: cada 2 semanas busca (con Google, vía Gemini) las fechas confirmadas que
+- MSI y finales de ligas: cada 2 semanas busca en internet (Tavily) las fechas confirmadas que
   todavía no están en el calendario y las guarda en data/eventos_esports.json; se anuncian igual que
   las del calendario.
 
@@ -148,7 +148,7 @@ class Eventos(commands.Cog, name="Eventos"):
 
     # ---------- Anunciar ----------
 
-    async def _announce(self, prompt: str, fallback: str, search: bool = False) -> None:
+    async def _announce(self, prompt: str, fallback: str, web: str = "") -> None:
         """Manda un anuncio a cada servidor (con la voz del personaje si hay IA)."""
         for guild in self.bot.guilds:
             channel = self.channel_for(guild)
@@ -157,7 +157,7 @@ class Eventos(commands.Cog, name="Eventos"):
             persona = _persona(self.bot)
             text = None
             if persona:
-                text = await persona.ask(channel, f"(({prompt}))", 90 if search else 45, remember=False, search=search)
+                text = await persona.ask(channel, f"(({prompt}))", 90 if web else 45, remember=False, web=web)
                 text = extract_actions(text)[0] if text else None
             try:
                 await channel.send((text or fallback)[:2000], allowed_mentions=NO_MENTIONS)
@@ -196,12 +196,12 @@ class Eventos(commands.Cog, name="Eventos"):
         self._mark(key)
         patch = dd.patch
         await self._announce(
-            f"Salió el parche {patch} de League of Legends (antes estaba el {patch_label(previous)}). Busca "
-            f"las notas oficiales del parche {patch} y anúncialo al servidor en personaje: cuenta en una lista "
+            f"Salió el parche {patch} de League of Legends (antes estaba el {patch_label(previous)}). Con "
+            f"las notas del parche {patch} que encontró la búsqueda (abajo), anúncialo al servidor en personaje: cuenta en una lista "
             "corta los 3 a 5 cambios más importantes (campeones mejorados o debilitados, objetos, sistemas). Si no "
             "encuentras las notas todavía, solo anuncia que llegó, sin inventar cambios.",
             f"🌿 ¡Llegó el parche **{patch}** de League of Legends! A ver qué sueños nuevos trae... 🦌✨",
-            search=True,
+            web=f"League of Legends patch {patch} notes: buffs, nerfs y cambios principales",
         )
 
     # ---------- MSI y finales de ligas (búsqueda automática) ----------
@@ -222,15 +222,16 @@ class Eventos(commands.Cog, name="Eventos"):
         today = date.today()
         reply = await persona.ask(
             types.SimpleNamespace(id=0),  # "canal" interno: no se mezcla con ninguna charla
-            "((Tarea interna del sistema, no es una charla. Busca en Google (lolesports.com, Liquipedia, "
-            f"Leaguepedia) las fechas CONFIRMADAS de los próximos eventos de League of Legends desde hoy "
+            "((Tarea interna del sistema, no es una charla. Con los resultados de la búsqueda en internet "
+            f"(abajo), saca las fechas CONFIRMADAS de los próximos eventos de League of Legends desde hoy "
             f"({today.isoformat()}) y durante los próximos 8 meses: el MSI (Mid-Season Invitational) y las "
             "FINALES de cada split o temporada de las ligas LCK, LPL, LEC, LCS, CBLOL y LCP. No incluyas el "
             "Mundial (Worlds). Responde SOLO con una línea por evento, sin ningún otro texto, con este formato "
             "exacto:\nAAAA-MM-DD | AAAA-MM-DD | nombre del evento | ciudad y estadio\n(la primera fecha es el "
             "día en que empieza y la segunda el último día; si dura un solo día, repite la fecha). Solo fechas "
             "confirmadas oficialmente. Si no encuentras ninguna, responde NINGUNO.))",
-            120, remember=False, search=True,
+            120, remember=False,
+            web=f"League of Legends esports {today.year} {today.year + 1} schedule dates: MSI, LCK LPL LEC LCS CBLOL LCP finals",
         )
         if reply is None:
             self.state["esports_proxima"] = time.time() + ESPORTS_RETRY
@@ -276,7 +277,7 @@ class Eventos(commands.Cog, name="Eventos"):
                 "nombre": name,
                 "desde": start.isoformat(),
                 "hasta": end.isoformat(),
-                "contexto": f"{name} en {place} (fechas encontradas automáticamente en Google). Si te "
+                "contexto": f"{name} en {place} (fechas encontradas automáticamente en internet). Si te "
                             "preguntan resultados, equipos u horarios, búscalos; no los inventes.",
                 "anunciar": True,
                 "buscar": True,
@@ -304,11 +305,11 @@ class Eventos(commands.Cog, name="Eventos"):
             await self._announce(
                 f"Hoy, {today:%d/%m}, {'es' if event.start == event.end else 'empieza'}: {event.name}. "
                 f"{event.context} Anúncialo al servidor en personaje, con emoción, en 2 a 4 frases"
-                + (". Busca en Google qué pasa hoy (partidos, horarios en hora de Argentina, equipos) y "
+                + (". Con los resultados de la búsqueda (abajo), cuenta qué pasa hoy (partidos, horarios en hora local, equipos) y "
                    "menciona lo más importante sin inventar" if event.search else "")
                 + ".",
                 f"📅 ¡Hoy {'es' if event.start == event.end else 'empieza'} **{event.name}**! 🌸",
-                search=event.search,
+                web=f"{event.name} League of Legends partidos de hoy {today:%d/%m/%Y} horarios" if event.search else "",
             )
 
     async def _monthly_wrapped(self, today: date) -> None:

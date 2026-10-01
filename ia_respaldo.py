@@ -13,7 +13,7 @@ bot pide al proveedor la lista de modelos que tiene hoy y elige solo los mejores
 
 Para usar otro proveedor (OpenRouter, Cerebras, Mistral...) cambia BACKUP_AI_URL y los modelos.
 
-Diferencias con Gemini: no ve imágenes ni busca en Google (si piden datos actuales de League, lo dice).
+Diferencias con Gemini: no ve imágenes.
 Groq informa en cada respuesta cuántos pedidos quedan en el día: se guardan para !cupo y !estado.
 """
 

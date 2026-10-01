@@ -139,9 +139,9 @@ El bot puede hablar como un personaje, por defecto **Lillia** de League of Legen
 - **Música con personalidad:** los avisos (canción en cola, qué está sonando, skip, errores,
   desconexión...) los dice el personaje. Debajo sigue apareciendo el dato en pequeño.
 - **Humor según la hora:** de madrugada está medio dormida y sugiere música tranquila; de día está más activa.
-- **Builds y picks de League:** si le preguntas por builds, runas, counters o qué pickear, busca en Google
-  los datos del parche actual (u.gg, op.gg, lolalytics, leagueofgraphs...) y responde con su personalidad,
-  con las fuentes en pequeño debajo (`PERSONA_LOL_SEARCH`). Además usa **Data Dragon** (los datos oficiales
+- **Builds y picks de League:** si le preguntas por builds, runas, counters, enfrentamientos o qué pickear,
+  trae los datos del parche actual de **OP.GG** (por su servidor oficial para IAs, gratis y sin clave) y responde
+  con su personalidad (`PERSONA_LOL_SEARCH`; `OPGG=false` lo apaga). Además usa **Data Dragon** (los datos oficiales
   de Riot, sin clave): sabe el número del parche actual (para buscar datos de ESE parche), la lista de
   objetos que existen hoy en la Grieta (para no recomendar objetos que ya no están) y el kit real de los
   campeones que nombres. Se actualiza solo con cada parche (`data/datadragon/`).
@@ -204,7 +204,7 @@ Para gastar menos cupo: `PERSONA_MUSIC_COMMENTS=false` (no comenta la música) y
 **IA de respaldo (recomendada):** si pones `BACKUP_AI_KEY` en `.env`, cuando Gemini se queda sin cupo
 responde otra IA y Lillia no se duerme. Por defecto usa **Groq** (gratis, sin tarjeta, unas 1000 respuestas
 por día con Llama 3.3 70B): entra a <https://console.groq.com>, crea una API key y pégala. El respaldo no ve
-imágenes ni busca en Google. Sirve cualquier proveedor compatible con OpenAI (`BACKUP_AI_URL`, `BACKUP_AI_MODELS`).
+imágenes. Sirve cualquier proveedor compatible con OpenAI (`BACKUP_AI_URL`, `BACKUP_AI_MODELS`).
 
 **¿Cuánto cupo queda?** `!cupo` muestra los pedidos y tokens de hoy por modelo. Google no informa cuánto
 queda, así que el bot **aprende** el límite de cada modelo el día que se agota (cuántos pedidos llevaba) y
@@ -242,6 +242,9 @@ Con eso:
   (resumen post-partida, `!historial`, la charla y el Wrapped). Solo se ven las partidas de la cuenta con
   sesión en ese cliente (y las de los amigos que jugaron en esas partidas). Se guardan en
   `data/partidas_mayhem.json`. Se apaga con `LCU_MAYHEM=false`.
+- **Escena competitiva:** si preguntas por un jugador o equipo profesional ("¿cuándo vuelve a jugar Josedeodo
+  en la LCS?"), Lillia busca en OP.GG en qué equipo está hoy el jugador y el calendario y resultados de la liga
+  o del equipo, y suma una búsqueda en internet (cuadro de playoffs, fechas). Da las horas en hora local.
 - **¿Quién está jugando?:** si le preguntas a Lillia "¿alguien está en partida?" o "¿@Lucía está jugando?", consulta
   a Riot en el momento (cola, campeón, minutos de juego y qué amigos van juntos). Solo ve las cuentas vinculadas;
   ARAM: Caos solo si se juega desde la PC del bot. Para ver los dos equipos completos: `!partida @persona`.
@@ -279,6 +282,19 @@ Para crear cada ayudante (una vez por ayudante):
 
 `!estado` muestra cuántos ayudantes están conectados.
 
+## 🌐 Búsqueda en internet y clima
+
+- **Búsqueda (Tavily):** crea una cuenta gratis en <https://tavily.com> (1000 búsquedas por mes), copia la clave y
+  ponla en `.env` como `TAVILY_API_KEY=tvly-...`. Con eso Lillia busca datos actuales cuando se los preguntan:
+  noticias, precios, fechas, resultados, notas de parche (las builds salen de OP.GG, sin gastar búsquedas). Si le hablan directamente y no sabe un
+  dato actual, ella misma pide la búsqueda. La misma búsqueda no se repite por 10 minutos y nunca pasa de
+  `TAVILY_MONTHLY_LIMIT` por mes. `!cupo` y `!estado` muestran cuántas lleva. Sin Tavily, Lillia
+  avisa que no puede buscar en vez de inventar.
+- **Clima (Open-Meteo):** gratis y sin clave. "¿Llueve el finde en Berazategui?" trae el tiempo actual y el
+  pronóstico de 10 días de ese lugar. `WEATHER_DEFAULT_PLACE` es el lugar que se usa si no dicen dónde.
+- **Builds y calendario de esports (OP.GG):** gratis y sin clave. Las preguntas de esports suman además una
+  búsqueda de Tavily.
+
 ## ⏰ Recordatorios
 
 Se piden hablando ("@Lillia recordame el viernes a las 21 la sesión de D&D", "@Lillia recordale a @Lucía
@@ -308,7 +324,7 @@ Nadie del servidor tiene que configurar nada:
   cuartos, semis y la final del 14/11 en Nueva York; en los días de partidos busca qué pasa ese día),
   su aniversario (22/07), Halloween, Navidad, Año Nuevo y el Día del Amigo, y las finales de la LCS (4/10)
   y del CBLOL (10/10).
-- **MSI y finales de ligas:** cada 2 semanas busca solo en Google las fechas confirmadas del MSI y de las
+- **MSI y finales de ligas:** cada 2 semanas busca sola en internet (Tavily) las fechas confirmadas del MSI y de las
   finales de LCK, LPL, LEC, LCS, CBLOL y LCP que todavía no estén en el calendario, las guarda en
   `data/eventos_esports.json` y las anuncia el día que empiezan (`PERSONA_ESPORTS_AUTO`). Si quieres
   corregir una fecha, ponla en `personajes/eventos.json`: la tuya tiene prioridad.

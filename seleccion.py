@@ -30,6 +30,7 @@ from discord.ext import commands, tasks
 
 import avisos
 import lcu as lcu_mod
+import opgg
 import persona as persona_mod
 import riot_cuentas as cuentas
 from datadragon import dd
@@ -218,6 +219,23 @@ class Seleccion(commands.Cog, name="Selección"):
                         break
         return await avisos.get_owner(self.bot)
 
+    async def _opgg(self, mode: Mode, session: dict, champion: int) -> str:
+        """Build real del parche (OP.GG) para ese campeón, modo y línea. '' si no hay datos."""
+        cid = dd.by_key.get(int(champion))
+        if not cid or mode.arena:  # OP.GG no tiene datos de Arena por este medio
+            return ""
+        position = {"TOP": "top", "JUNGLE": "jungle", "MIDDLE": "mid", "BOTTOM": "adc", "UTILITY": "support"}.get(
+            (_me(session).get("assignedPosition") or "").upper(), "none")
+        try:
+            if mode.label == "ARAM: Caos":
+                parts = [await opgg.aram_augments(cid), await opgg.champion_build(cid, "none", "aram")]
+                return "\n\n".join(p for p in parts if p)
+            game_mode = "aram" if "ARAM" in mode.label else "urf" if "URF" in mode.label else "ranked"
+            return await asyncio.wait_for(opgg.champion_build(cid, position if game_mode == "ranked" else "none", game_mode), 30)
+        except Exception as exc:
+            log.info("No se pudo traer la build de OP.GG: %s", exc)
+            return ""
+
     async def _advise(self, mode: Mode, session: dict, champion: int) -> None:
         try:
             persona = persona_mod._persona(self.bot)
@@ -234,9 +252,13 @@ class Seleccion(commands.Cog, name="Selección"):
                 await asyncio.wait_for(dd.items_text(), 8),
                 await asyncio.wait_for(dd.champions_text(f"campeón {names}"), 8),
             ] if p)
+            build = await self._opgg(mode, session, champion)
+            if build:
+                extra = f"{extra}\n\n{build}"
+            else:
+                extra = f"{extra}\n\n{persona_mod.NO_WEB_NOTE}"
             channel = user.dm_channel or await user.create_dm()
-            reply = await persona.ask(channel, prompt, ADVICE_TIMEOUT, people=[user], remember=False,
-                                      search=True, extra=extra)
+            reply = await persona.ask(channel, prompt, ADVICE_TIMEOUT, people=[user], remember=False, extra=extra)
             if not reply:
                 return
             text = persona_mod.extract_actions(reply)[0]

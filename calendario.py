@@ -7,7 +7,7 @@ Cada evento tiene:
   "contexto":  lo que Lillia sabe/siente sobre el evento mientras dura (se le pasa a la IA en cada
                charla, así lo menciona cuando viene al caso).
   "anunciar":  true = el primer día del evento lo anuncia sola en el canal de eventos (opcional).
-  "buscar":    true = al anunciarlo busca en Google datos del día (partidos, resultados...) (opcional).
+  "buscar":    true = al anunciarlo busca en internet datos del día (partidos, resultados...) (opcional).
 
 El archivo se vuelve a leer solo cuando lo cambias: no hace falta reiniciar el bot.
 

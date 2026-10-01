@@ -10,6 +10,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timedelta
@@ -35,13 +36,14 @@ SUMMARY_BATCH = 8  # cada cuántos mensajes olvidados se actualiza el resumen de
 SUMMARY_MAX_CHARS = 1500
 MAX_TURNS = 24  # mensajes que recuerda por canal (12 idas y vueltas)
 MODEL_TIMEOUT = 20  # segundos máximos por modelo en una charla
-SEARCH_MODEL_TIMEOUT = 40  # con búsqueda en Google (datos de League) tarda más
 FAST_MODEL_TIMEOUT = 6  # segundos máximos por modelo en un comentario de la música
 RETIRED_RECHECK = 7 * 86400  # un modelo dado de baja (404) se vuelve a probar a la semana
 EXHAUSTED_ALERT_MIN = 15 * 60  # solo se avisa al dueño si la IA va a estar sin cupo al menos esto
 FALLBACK_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"]
 # El cupo diario gratis de Gemini se renueva a medianoche, hora del Pacífico.
 QUOTA_TZ = ZoneInfo("America/Los_Angeles")
+# Versión mínima de Gemini que se usa: los anteriores (2.5 y más viejos) Google ya los dio de baja.
+MIN_VERSION = float(os.getenv("GEMINI_MIN_VERSION", "3") or 3)
 MODEL_RE = re.compile(r"^gemini-(\d+(?:\.\d+)?)-flash(-lite)?$")
 
 # Configuraciones de "pensamiento" a probar (menos pensamiento = más rápido y gasta menos cupo).
@@ -75,6 +77,12 @@ def _next_quota_reset() -> float:
     now = datetime.now(QUOTA_TZ)
     tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
     return tomorrow.timestamp()
+
+
+def _too_old(model: str) -> bool:
+    """Modelos anteriores a MIN_VERSION (ej: gemini-2.5-flash): ni se listan ni se prueban."""
+    match = MODEL_RE.match(model)
+    return bool(match) and float(match.group(1)) < MIN_VERSION
 
 
 def _cooldown_for(exc: errors.APIError) -> float:
@@ -113,30 +121,6 @@ def strip_actions(text: str) -> str:
     if not cleaned and text.strip():
         return "✨"  # el mensaje era solo una acción: queda un emoji en su lugar
     return cleaned
-
-
-SOURCES_MARK = "\n-# Fuentes:"
-
-
-def _format_sources(response) -> str:
-    """Línea pequeña con las páginas que consultó el modelo al buscar en Google."""
-    try:
-        chunks = response.candidates[0].grounding_metadata.grounding_chunks or []
-    except (AttributeError, IndexError, TypeError):
-        return ""
-    links, seen = [], set()
-    for chunk in chunks:
-        web = getattr(chunk, "web", None)
-        if not web or not web.uri:
-            continue
-        title = (web.title or web.uri).strip()
-        if title in seen:
-            continue
-        seen.add(title)
-        links.append(f"[{title}](<{web.uri}>)")  # <...> evita que Discord muestre la vista previa
-        if len(links) == 4:
-            break
-    return f"{SOURCES_MARK} {' · '.join(links)}" if links else ""
 
 
 MUSIC_CONTROL_PROMPT = """
@@ -271,10 +255,8 @@ class GeminiBackend:
         self.stats: dict[str, dict] = state.get("stats", {})
         # Modelos que Google dio de baja (responden 404 aunque sigan apareciendo en la lista de
         # modelos): no se vuelven a usar. Se reintentan una vez por semana, por si vuelven.
-        self.retired: dict[str, float] = state.get("retirados", {})
+        self.retired: dict[str, float] = {m: t for m, t in state.get("retirados", {}).items() if not _too_old(m)}
         self._locks: dict[str, asyncio.Lock] = {}
-        self.no_search: set[str] = set()  # modelos que no aceptan la búsqueda en Google
-        self.search_paused_until = 0.0  # sin cupo de búsquedas en Google: hasta cuándo se responde sin buscar
         # Función para avisar al dueño por DM: alert(clave, texto, no_repetir_hasta). La pone persona.py.
         self.alert: Optional[Callable[[str, str, Optional[float]], None]] = None
         # Uso del día (pedidos y tokens por modelo) y límites diarios "aprendidos": Google no dice
@@ -319,7 +301,7 @@ class GeminiBackend:
                 name = (model.name or "").removeprefix("models/")
                 match = MODEL_RE.match(name)
                 actions = model.supported_actions or []
-                if match and (not actions or "generateContent" in actions):
+                if match and float(match.group(1)) >= MIN_VERSION and (not actions or "generateContent" in actions):
                     found.append((float(match.group(1)), bool(match.group(2)), name))
         except errors.APIError as exc:
             if exc.code in (400, 401, 403):
@@ -453,19 +435,17 @@ class GeminiBackend:
         wait: bool = True,
         fast: bool = False,
         remember: Optional[bool] = None,
-        search: bool = False,
         images: Optional[list[tuple[str, bytes]]] = None,
     ) -> Optional[str]:
         """fast=True (comentarios de la música): primero los modelos Lite, que responden antes,
         y menos tiempo por modelo; así un modelo lento o saturado no retrasa los avisos.
         remember=False: no se guarda en la memoria del canal (por defecto, los comentarios
         automáticos no se guardan, para no desplazar lo que la gente le dijo).
-        search=True: el modelo puede buscar en Google (para datos actuales, como builds de League).
         images: [(tipo MIME, bytes)] que la IA puede ver junto al texto (no se guardan en la memoria)."""
         if remember is None:
             remember = not fast
         models = self.ordered_models(fast)
-        per_model = FAST_MODEL_TIMEOUT if fast else SEARCH_MODEL_TIMEOUT if search else MODEL_TIMEOUT
+        per_model = FAST_MODEL_TIMEOUT if fast else MODEL_TIMEOUT
         lock = self._locks.setdefault(key, asyncio.Lock())
         if not wait and lock.locked():
             return None  # el canal está ocupado con otra respuesta: no hacemos esperar a la música
@@ -490,7 +470,7 @@ class GeminiBackend:
                     continue
                 started = time.monotonic()
                 try:
-                    reply = await asyncio.wait_for(self._generate(model, contents, system, search), per_model)
+                    reply = await asyncio.wait_for(self._generate(model, contents, system), per_model)
                 except asyncio.TimeoutError:
                     self.cooldowns[model] = time.time() + 60
                     self._record(model, ok=False)
@@ -500,15 +480,15 @@ class GeminiBackend:
                     continue
                 elapsed = time.monotonic() - started
                 self._record(model, ok=True, seconds=elapsed)
-                log.info("Gemini: %s respondió en %.1fs%s", model, elapsed, " (con búsqueda)" if search else "")
+                log.info("Gemini: %s respondió en %.1fs", model, elapsed)
                 break
             if reply is None:
                 self.check_exhausted()
-                reply = await self._ask_backup(system, contents, search, fast)
+                reply = await self._ask_backup(system, contents, fast)
             if reply is None:
                 return None
             if remember:
-                remembered = reply.split(SOURCES_MARK)[0].rstrip()  # las fuentes no hace falta recordarlas
+                remembered = reply
                 history = history + [remembered_turn, {"role": "model", "parts": [{"text": remembered}]}]
                 self.history[key] = history[-MAX_TURNS:]
                 self._queue_for_summary(key, history[:-MAX_TURNS])
@@ -524,13 +504,10 @@ class GeminiBackend:
         reply = _strip_wrapping_quotes(reply) if reply else reply
         return reply or None
 
-    async def _ask_backup(self, system: str, contents: list, search: bool, fast: bool) -> Optional[str]:
-        """Si Gemini no pudo, contesta la IA de respaldo (sin imágenes ni búsqueda en Google)."""
+    async def _ask_backup(self, system: str, contents: list, fast: bool) -> Optional[str]:
+        """Si Gemini no pudo, contesta la IA de respaldo (sin imágenes)."""
         if not (self.backup and self.backup.available()):
             return None
-        if search:
-            system += ("\n\n(Ahora mismo no puedes buscar en internet: si te piden datos actuales, da lo que "
-                       "sepas aclarando que puede estar desactualizado.)")
         try:
             reply = await asyncio.wait_for(self.backup.chat(system, contents, 400 if fast else 900),
                                            FAST_MODEL_TIMEOUT * 2 if fast else MODEL_TIMEOUT * 2)
@@ -599,17 +576,15 @@ class GeminiBackend:
         finally:
             self._summarizing.discard(key)
 
-    async def _generate(self, model: str, contents: list[dict], system: str, search: bool = False) -> Optional[str]:
+    async def _generate(self, model: str, contents: list[dict], system: str) -> Optional[str]:
         start = self.thinking.get(model, 0)
-        use_search = search and model not in self.no_search and time.time() >= self.search_paused_until
         for index in range(start, len(THINKING_OPTIONS)):
             config = types.GenerateContentConfig(
                 system_instruction=system,
                 temperature=0.9,
-                max_output_tokens=1536 if use_search else 1024,
+                max_output_tokens=1536,
                 thinking_config=THINKING_OPTIONS[index],
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                tools=[types.Tool(google_search=types.GoogleSearch())] if use_search else None,
             )
             try:
                 response = await self.client.aio.models.generate_content(
@@ -618,19 +593,6 @@ class GeminiBackend:
             except errors.APIError as exc:
                 if exc.code == 400 and "think" in str(exc).lower() and index + 1 < len(THINKING_OPTIONS):
                     continue  # este modelo no acepta esa config de pensamiento: probamos la siguiente
-                if use_search and exc.code in (400, 403) and re.search(r"search|tool|ground", str(exc), re.I):
-                    # Este modelo (o el plan gratis) no permite buscar en Google: se responde sin buscar.
-                    log.warning("Gemini: %s no permite búsqueda en Google (%s)", model, exc.message)
-                    self.no_search.add(model)
-                    return await self._generate(model, contents, system, search=False)
-                if exc.code == 429 and use_search:
-                    # La búsqueda en Google tiene su propio cupo (más chico). Si se acabó, se responde igual
-                    # pero sin buscar, en vez de dejar sin usar el modelo (y a Lillia dormida).
-                    self.search_paused_until = _cooldown_for(exc)
-                    until = datetime.fromtimestamp(self.search_paused_until).strftime("%d/%m %H:%M")
-                    log.warning("Gemini: sin cupo para buscar en Google (hasta %s); respondo sin buscar. %s",
-                                until, (exc.message or "")[:150])
-                    return await self._generate(model, contents, system, search=False)
                 if exc.code == 429:
                     self.cooldowns[model] = _cooldown_for(exc)
                     if self.cooldowns[model] - time.time() > 3600:  # límite DIARIO: se aprende cuántos pedidos tiene
@@ -680,8 +642,6 @@ class GeminiBackend:
             if not reply:
                 log.info("Gemini no devolvió texto (¿filtro de seguridad?) con %s", model)
                 return None
-            if use_search:
-                reply += _format_sources(response)
             return reply
         return None
 
