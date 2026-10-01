@@ -11,6 +11,7 @@ import base64
 import json
 import logging
 import os
+import re
 import struct
 import zlib
 from dataclasses import dataclass
@@ -91,7 +92,13 @@ def _character_from_card(card: dict, avatar: Optional[bytes]) -> Character:
 def load_character() -> Character:
     path = BASE_DIR / (os.getenv("PERSONA_FILE", "").strip() or DEFAULT_FILE)
     avatar_path = os.getenv("PERSONA_AVATAR", "").strip()
-    avatar = (BASE_DIR / avatar_path).read_bytes() if avatar_path else None
+    avatar = None
+    if avatar_path:
+        try:
+            avatar = (BASE_DIR / avatar_path).read_bytes()
+        except OSError:
+            # Sin imagen el personaje funciona igual: solo no se cambia la foto del bot.
+            log.warning("No encontré la imagen de PERSONA_AVATAR (%s): sigo sin cambiar la foto del bot", avatar_path)
 
     suffix = path.suffix.lower()
     if suffix == ".png":
@@ -123,6 +130,16 @@ def load_character() -> Character:
 MAX_EXAMPLES_CHARS = 60_000  # ~15.000 tokens: más que eso hace cada respuesta lenta y gasta cupo
 
 
+_QUOTED_RE = re.compile(r'^\s*["“”«]\s*(.*?)\s*["“”»]\s*[.,;]?\s*$')
+
+
+def _unquote(line: str) -> str:
+    """'"¿Yo? Un sueño hecho realidad".' -> '¿Yo? Un sueño hecho realidad' (así se copian de la wiki).
+    Sin esto la IA imitaría también las comillas y hablaría "entre comillas"."""
+    match = _QUOTED_RE.match(line)
+    return match.group(1) if match else line.strip()
+
+
 def _load_examples(character_path: Path) -> str:
     """Frases de ejemplo: PERSONA_EXAMPLES, o personajes/<nombre>_frases.txt si existe."""
     configured = os.getenv("PERSONA_EXAMPLES", "").strip()
@@ -133,7 +150,8 @@ def _load_examples(character_path: Path) -> str:
         return ""
     # Las líneas que empiezan con # son notas para ti y no se mandan a la IA.
     lines = path.read_text(encoding="utf-8").splitlines()
-    text = "\n".join(line for line in lines if not line.lstrip().startswith("#")).strip()
+    lines = [_unquote(line) for line in lines if line.strip() and not line.lstrip().startswith("#")]
+    text = "\n".join(lines).strip()
     if len(text) > MAX_EXAMPLES_CHARS:
         log.warning(
             "%s es muy largo (%d caracteres): se usan solo los primeros %d para no gastar tanto cupo",

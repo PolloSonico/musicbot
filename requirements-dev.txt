@@ -1,0 +1,2 @@
+# Solo para correr las pruebas automáticas (windows\probar_codigo.bat). El bot no las necesita.
+pytest>=8
